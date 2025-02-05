@@ -2,6 +2,7 @@ package chain_scanner_service
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/internal/svc"
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/pb"
@@ -29,7 +30,11 @@ func (l *MetaLogic) Meta(in *pb.EmptyReq) (*pb.ChainScannerMetaRes, error) {
 	conn := repository.NewConn(conf.PostgreSQL.GetConnectString())
 	scanPrograssModel := repository.NewScanPrograssModel(conn)
 	record, err := scanPrograssModel.FindOneByChainId(l.ctx, conf.Chain.ChainId)
-	if err != nil {
+	switch err {
+	case repository.ErrNotFound:
+		return nil, fmt.Errorf("%s", "Miss scan prograss record")
+	case nil:
+	default:
 		return nil, err
 	}
 
