@@ -19,7 +19,7 @@ import (
 var (
 	scanPrograssFieldNames          = builder.RawFieldNames(&ScanPrograss{}, true)
 	scanPrograssRows                = strings.Join(scanPrograssFieldNames, ",")
-	scanPrograssRowsExpectAutoSet   = strings.Join(stringx.Remove(scanPrograssFieldNames, "create_at", "create_time", "created_at", "update_at", "update_time", "updated_at"), ",")
+	scanPrograssRowsExpectAutoSet   = strings.Join(stringx.Remove(scanPrograssFieldNames, "id", "create_at", "create_time", "created_at", "update_at", "update_time", "updated_at"), ",")
 	scanPrograssRowsWithPlaceHolder = builder.PostgreSqlJoin(stringx.Remove(scanPrograssFieldNames, "id", "create_at", "create_time", "created_at", "update_at", "update_time", "updated_at"))
 )
 
@@ -88,8 +88,8 @@ func (m *defaultScanPrograssModel) FindOneByChainId(ctx context.Context, chainId
 }
 
 func (m *defaultScanPrograssModel) Insert(ctx context.Context, data *ScanPrograss) (sql.Result, error) {
-	query := fmt.Sprintf("insert into %s (%s) values ($1, $2, $3)", m.table, scanPrograssRowsExpectAutoSet)
-	ret, err := m.conn.ExecCtx(ctx, query, data.Id, data.ChainId, data.Height)
+	query := fmt.Sprintf("insert into %s (%s) values ($1, $2)", m.table, scanPrograssRowsExpectAutoSet)
+	ret, err := m.conn.ExecCtx(ctx, query, data.ChainId, data.Height)
 	return ret, err
 }
 

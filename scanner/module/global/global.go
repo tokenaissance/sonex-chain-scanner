@@ -5,17 +5,28 @@ import (
 
 	"github.com/sonex-dex/sonex-chain-scanner/pkg/id_generater"
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/internal/svc"
+	"github.com/sonex-dex/sonex-chain-scanner/scanner/module/chain_scanner"
 )
 
 var Ctx *svc.ServiceContext
-var idGenerater *id_generater.IdGenerater
 
-func InitIdGenerater(workerId int64) error {
-	generater, err := id_generater.NewIdGenerater(workerId)
+var idGenerater *id_generater.IdGenerater
+var chainScanner *chain_scanner.ChainScanner
+
+func InitIdGenerater(workerId int64) (err error) {
+	idGenerater, err = id_generater.NewIdGenerater(workerId)
 	if err != nil {
 		return err
 	}
-	idGenerater = generater
+	return nil
+}
+
+func InitChainScanner() (err error) {
+	chainScanner, err = chain_scanner.NewChainScanner(*Ctx)
+	if err != nil {
+		return err
+	}
+	chainScanner.Start()
 	return nil
 }
 

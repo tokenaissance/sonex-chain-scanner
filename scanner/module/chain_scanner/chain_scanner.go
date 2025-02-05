@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/sonex-dex/sonex-chain-scanner/pkg/queue"
-	"github.com/sonex-dex/sonex-chain-scanner/scanner/module/global"
+	"github.com/sonex-dex/sonex-chain-scanner/scanner/internal/svc"
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/repository"
 
 	"github.com/avast/retry-go/v4"
@@ -19,6 +19,7 @@ import (
 )
 
 type ChainScanner struct {
+	svcCtx                  svc.ServiceContext
 	minConfirmations        int64
 	minDelayWaitMillisecond int64
 	maxLogsNumber           int64
@@ -28,22 +29,23 @@ type ChainScanner struct {
 	replays                 queue.Queue
 }
 
-func NewChainScanner() (*ChainScanner, error) {
-	chainConf := global.Ctx.Config.Chain
-	minConfirmations := chainConf.MinConfirmations
+func NewChainScanner(svcCtx svc.ServiceContext) (*ChainScanner, error) {
+	conf := svcCtx.Config
+	minConfirmations := conf.Chain.MinConfirmations
 	if minConfirmations < 0 {
 		minConfirmations = 5
 	}
-	minDelayWaitMillisecond := chainConf.MinDelayWaitMillisecond
+	minDelayWaitMillisecond := conf.Chain.MinDelayWaitMillisecond
 	if minDelayWaitMillisecond < 0 {
 		minDelayWaitMillisecond = 2000
 	}
-	maxLogsNumber := chainConf.MaxLogsNumber
+	maxLogsNumber := conf.Chain.MaxLogsNumber
 	if maxLogsNumber < 0 {
 		maxLogsNumber = 1000
 	}
 
 	chainScanner := &ChainScanner{
+		svcCtx:                  svcCtx,
 		minConfirmations:        minConfirmations,
 		minDelayWaitMillisecond: minDelayWaitMillisecond,
 		maxLogsNumber:           maxLogsNumber,
@@ -56,7 +58,7 @@ func (cs *ChainScanner) AddHandler(handler IHandler) {
 }
 
 func (cs *ChainScanner) Start() {
-	conf := global.Ctx.Config
+	conf := cs.svcCtx.Config
 	ctx, cancel := context.WithCancel(context.Background())
 	cs.cancel = cancel
 
@@ -118,7 +120,7 @@ func (cs *ChainScanner) Start() {
 						prograss, err := scanPrograssModel.FindOneByChainId(ctx, conf.Chain.ChainId)
 						switch err {
 						case repository.ErrNotFound:
-							prograss = &repository.ScanPrograss{Height: int64(height)}
+							prograss = &repository.ScanPrograss{Height: int64(height - 1)}
 						case nil:
 						default:
 							return err
@@ -229,11 +231,7 @@ func (cs *ChainScanner) Start() {
 					record, err := scanPrograssModel.FindOneByChainId(ctx, conf.Chain.ChainId)
 					switch err {
 					case repository.ErrNotFound:
-						id, err := global.NewId()
-						if err != nil {
-							return err
-						}
-						scanPrograssModel.New(ctx, &repository.ScanPrograss{Id: id, ChainId: conf.Chain.ChainId, Height: int64(*opt.End) + 1})
+						scanPrograssModel.New(ctx, &repository.ScanPrograss{ChainId: conf.Chain.ChainId, Height: int64(*opt.End) + 1})
 					case nil:
 						err = scanPrograssModel.UpdateHeight(ctx, &repository.ScanPrograss{Id: record.Id, ChainId: conf.Chain.ChainId, Height: int64(*opt.End) + 1})
 						if err != nil {
@@ -270,8 +268,8 @@ func (cs *ChainScanner) ReplayByBlockNumber(number uint64) {
 }
 
 func (cs *ChainScanner) ReplayByTxHash(ctx context.Context, txHash string) error {
-	chainConf := global.Ctx.Config.Chain
-	client, err := chainConf.GetClient()
+	conf := cs.svcCtx.Config
+	client, err := conf.Chain.GetClient()
 	if err != nil {
 		return err
 	}

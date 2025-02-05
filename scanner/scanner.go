@@ -6,7 +6,6 @@ import (
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/config"
 	sonexserviceServer "github.com/sonex-dex/sonex-chain-scanner/scanner/internal/server/sonexservice"
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/internal/svc"
-	"github.com/sonex-dex/sonex-chain-scanner/scanner/module/chain_scanner"
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/module/global"
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/pb"
 
@@ -27,13 +26,10 @@ func Run(conf config.Config) {
 	if err != nil {
 		panic(err)
 	}
-
-	// Start scan chain
-	chainScanner, err := chain_scanner.NewChainScanner()
+	err = global.InitChainScanner()
 	if err != nil {
 		panic(err)
 	}
-	chainScanner.Start()
 
 	// Rpc configure
 	s := zrpc.MustNewServer(conf.RpcServerConf, func(grpcServer *grpc.Server) {

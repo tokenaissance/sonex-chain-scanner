@@ -36,8 +36,8 @@ func (m *customScanPrograssModel) withSession(session sqlx.Session) ScanPrograss
 }
 
 func (m *customScanPrograssModel) New(ctx context.Context, data *ScanPrograss) error {
-	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES ($1, $2, $3, $4, $5)", m.table, scanPrograssRows)
-	_, err := m.conn.ExecCtx(ctx, query, data.Id, NowUTC(), NowUTC(), data.ChainId, data.Height)
+	query := fmt.Sprintf("INSERT INTO %s (created_at, updated_at, chain_id, height) VALUES ($1, $2, $3, $4)", m.table)
+	_, err := m.conn.ExecCtx(ctx, query, NowUTC(), NowUTC(), data.ChainId, data.Height)
 	return err
 }
 
