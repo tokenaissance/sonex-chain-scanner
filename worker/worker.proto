@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package worker;
+
+option go_package = "./pb"; 
+
+message SonexReq {}
+message SonexRes {}
+
+service SonexService {
+    rpc Call (SonexReq) returns (SonexRes);
+}

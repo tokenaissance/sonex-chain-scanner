@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package scanner;
+
+option go_package = "./pb"; 
+
+message EmptyReq {}
+message EmptyRes {}
+
+service SonexService {
+    rpc Meta (EmptyReq) returns (EmptyRes);
+}

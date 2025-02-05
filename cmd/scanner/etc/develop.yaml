@@ -1,0 +1,6 @@
+Nacos:
+  Host: 10.0.0.150
+  Port: 8848
+  NamespaceId: 503c326f-1d3f-4ef5-b96a-b2aa56aacbe0
+  DataId: SONEX_SCANNER
+  Group: DEFAULT_GROUP
