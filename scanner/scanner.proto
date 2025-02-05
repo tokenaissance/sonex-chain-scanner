@@ -7,6 +7,12 @@ option go_package = "./pb";
 message EmptyReq {}
 message EmptyRes {}
 
-service SonexService {
-    rpc Meta (EmptyReq) returns (EmptyRes);
+message ChainScannerMetaRes {
+    int64 chain_id = 1;
+    int64 height = 2;
+    int64 updated_at = 3;
+}
+
+service ChainScannerService {
+    rpc Meta (EmptyReq) returns (ChainScannerMetaRes);
 }

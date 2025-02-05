@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/config"
-	sonexserviceServer "github.com/sonex-dex/sonex-chain-scanner/scanner/internal/server/sonexservice"
+	"github.com/sonex-dex/sonex-chain-scanner/scanner/internal/server/chain_scanner_service"
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/internal/svc"
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/module/global"
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/pb"
@@ -33,7 +33,7 @@ func Run(conf config.Config) {
 
 	// Rpc configure
 	s := zrpc.MustNewServer(conf.RpcServerConf, func(grpcServer *grpc.Server) {
-		pb.RegisterSonexServiceServer(grpcServer, sonexserviceServer.NewSonexServiceServer(ctx))
+		pb.RegisterChainScannerServiceServer(grpcServer, chain_scanner_service.NewChainScannerServiceServer(ctx))
 
 		if conf.Mode == service.DevMode || conf.Mode == service.TestMode {
 			reflection.Register(grpcServer)
