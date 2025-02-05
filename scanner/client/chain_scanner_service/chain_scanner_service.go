@@ -10,12 +10,14 @@ import (
 )
 
 type (
-	ChainScannerMetaRes = pb.ChainScannerMetaRes
-	EmptyReq            = pb.EmptyReq
-	EmptyRes            = pb.EmptyRes
+	EmptyReq              = pb.EmptyReq
+	EmptyRes              = pb.EmptyRes
+	ChainScannerMetaRes   = pb.ChainScannerMetaRes
+	ChainScannerReplayReq = pb.ChainScannerReplayReq
 
 	ChainScannerService interface {
 		Meta(ctx context.Context, in *EmptyReq, opts ...grpc.CallOption) (*ChainScannerMetaRes, error)
+		Replay(ctx context.Context, in *ChainScannerReplayReq, opts ...grpc.CallOption) (*EmptyRes, error)
 	}
 
 	defaultChainScannerService struct {
@@ -32,4 +34,9 @@ func NewChainScannerService(cli zrpc.Client) ChainScannerService {
 func (m *defaultChainScannerService) Meta(ctx context.Context, in *EmptyReq, opts ...grpc.CallOption) (*ChainScannerMetaRes, error) {
 	client := pb.NewChainScannerServiceClient(m.cli.Conn())
 	return client.Meta(ctx, in, opts...)
+}
+
+func (m *defaultChainScannerService) Replay(ctx context.Context, in *ChainScannerReplayReq, opts ...grpc.CallOption) (*EmptyRes, error) {
+	client := pb.NewChainScannerServiceClient(m.cli.Conn())
+	return client.Replay(ctx, in, opts...)
 }

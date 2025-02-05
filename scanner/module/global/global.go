@@ -36,3 +36,11 @@ func NewId() (int64, error) {
 	}
 	return idGenerater.Generate()
 }
+
+func AddChainHandler(handler chain_scanner.IHandler) {
+	chainScanner.AddHandler(handler)
+}
+
+func Replay(request chain_scanner.Replay) {
+	chainScanner.Replay(request)
+}

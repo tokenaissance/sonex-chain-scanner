@@ -19,7 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion8
 
 const (
-	ChainScannerService_Meta_FullMethodName = "/scanner.ChainScannerService/Meta"
+	ChainScannerService_Meta_FullMethodName   = "/scanner.ChainScannerService/Meta"
+	ChainScannerService_Replay_FullMethodName = "/scanner.ChainScannerService/Replay"
 )
 
 // ChainScannerServiceClient is the client API for ChainScannerService service.
@@ -27,6 +28,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type ChainScannerServiceClient interface {
 	Meta(ctx context.Context, in *EmptyReq, opts ...grpc.CallOption) (*ChainScannerMetaRes, error)
+	Replay(ctx context.Context, in *ChainScannerReplayReq, opts ...grpc.CallOption) (*EmptyRes, error)
 }
 
 type chainScannerServiceClient struct {
@@ -47,11 +49,22 @@ func (c *chainScannerServiceClient) Meta(ctx context.Context, in *EmptyReq, opts
 	return out, nil
 }
 
+func (c *chainScannerServiceClient) Replay(ctx context.Context, in *ChainScannerReplayReq, opts ...grpc.CallOption) (*EmptyRes, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EmptyRes)
+	err := c.cc.Invoke(ctx, ChainScannerService_Replay_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ChainScannerServiceServer is the server API for ChainScannerService service.
 // All implementations must embed UnimplementedChainScannerServiceServer
 // for forward compatibility
 type ChainScannerServiceServer interface {
 	Meta(context.Context, *EmptyReq) (*ChainScannerMetaRes, error)
+	Replay(context.Context, *ChainScannerReplayReq) (*EmptyRes, error)
 	mustEmbedUnimplementedChainScannerServiceServer()
 }
 
@@ -61,6 +74,9 @@ type UnimplementedChainScannerServiceServer struct {
 
 func (UnimplementedChainScannerServiceServer) Meta(context.Context, *EmptyReq) (*ChainScannerMetaRes, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Meta not implemented")
+}
+func (UnimplementedChainScannerServiceServer) Replay(context.Context, *ChainScannerReplayReq) (*EmptyRes, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Replay not implemented")
 }
 func (UnimplementedChainScannerServiceServer) mustEmbedUnimplementedChainScannerServiceServer() {}
 
@@ -93,6 +109,24 @@ func _ChainScannerService_Meta_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ChainScannerService_Replay_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ChainScannerReplayReq)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ChainScannerServiceServer).Replay(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ChainScannerService_Replay_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ChainScannerServiceServer).Replay(ctx, req.(*ChainScannerReplayReq))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ChainScannerService_ServiceDesc is the grpc.ServiceDesc for ChainScannerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -103,6 +137,10 @@ var ChainScannerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Meta",
 			Handler:    _ChainScannerService_Meta_Handler,
+		},
+		{
+			MethodName: "Replay",
+			Handler:    _ChainScannerService_Replay_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

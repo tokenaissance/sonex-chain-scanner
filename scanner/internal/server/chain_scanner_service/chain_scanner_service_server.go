@@ -23,3 +23,8 @@ func (s *ChainScannerServiceServer) Meta(ctx context.Context, in *pb.EmptyReq) (
 	l := chain_scanner_service.NewMetaLogic(ctx, s.svcCtx)
 	return l.Meta(in)
 }
+
+func (s *ChainScannerServiceServer) Replay(ctx context.Context, in *pb.ChainScannerReplayReq) (*pb.EmptyRes, error) {
+	l := chain_scanner_service.NewReplayLogic(ctx, s.svcCtx)
+	return l.Replay(in)
+}
