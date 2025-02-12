@@ -13,24 +13,25 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
-	pkg_common "github.com/sonex-dex/sonex-chain-scanner/pkg/common"
 )
 
 type EthClient struct {
 	*ethclient.Client
 }
 
-func toBlockNumArg(number *big.Int) (string, error) {
+func toBlockNumArg(number *big.Int) string {
 	if number == nil {
-		return "latest", nil
+		return "latest"
 	}
 	if number.Sign() >= 0 {
-		return hexutil.EncodeBig(number), nil
+		return hexutil.EncodeBig(number)
 	}
+	// It's negative.
 	if number.IsInt64() {
-		return rpc.BlockNumber(number.Int64()).String(), nil
+		return rpc.BlockNumber(number.Int64()).String()
 	}
-	return "", fmt.Errorf("%s", pkg_common.ERROR_INVAILD_PARAMETERS)
+	// It's negative and large, which is invalid.
+	return fmt.Sprintf("<invalid %d>", number)
 }
 
 func (ethClient *EthClient) BatchGetBlockByNumber(ctx context.Context, numbers []int64, full bool) (map[int64]*types.Block, error) {
@@ -42,13 +43,9 @@ func (ethClient *EthClient) BatchGetBlockByNumber(ctx context.Context, numbers [
 		requests := make([]rpc.BatchElem, len(numbers))
 		rawMessages := make([]*json.RawMessage, len(numbers))
 		for i, number := range numbers {
-			numberArg, err := toBlockNumArg(big.NewInt(number))
-			if err != nil {
-				return nil, fmt.Errorf("%s, number: %d", err, number)
-			}
 			requests[i] = rpc.BatchElem{
 				Method: "eth_getBlockByNumber",
-				Args:   []any{numberArg, full},
+				Args:   []any{toBlockNumArg(big.NewInt(number)), full},
 				Result: &rawMessages[i],
 			}
 		}
@@ -209,4 +206,110 @@ func (ethClient *EthClient) BatchGetBlockByNumber(ctx context.Context, numbers [
 	}
 
 	return blocks, nil
+}
+
+func (ethClient *EthClient) BatchGetBlockReceiptsByNumber(ctx context.Context, numbers []int64, full bool) (map[int64][]*types.Receipt, error) {
+	if len(numbers) == 0 {
+		return map[int64][]*types.Receipt{}, nil
+	}
+
+	batchCall := func(ctx context.Context, numbers []int64) (map[int64][]*types.Receipt, error) {
+		requests := make([]rpc.BatchElem, len(numbers))
+		responses := make([][]*types.Receipt, len(numbers))
+		for i, number := range numbers {
+			requests[i] = rpc.BatchElem{
+				Method: "eth_getBlockReceipts",
+				Args:   []any{rpc.BlockNumberOrHashWithNumber(rpc.BlockNumber(number))},
+				Result: &responses[i],
+			}
+		}
+		err := ethClient.Client.Client().BatchCallContext(ctx, requests)
+		if err != nil {
+			return nil, err
+		}
+		result := make(map[int64][]*types.Receipt, len(numbers))
+		for i, number := range numbers {
+			if requests[i].Error != nil {
+				return nil, requests[i].Error
+			}
+			response := responses[i]
+			if response == nil {
+				return nil, fmt.Errorf("get block[%d] receipts failed", number)
+			}
+			result[number] = response
+		}
+		return result, nil
+	}
+
+	batchSize := 100
+	batchCount := len(numbers) / batchSize
+	if len(numbers)%batchSize > 0 {
+		batchCount++
+	}
+
+	var wg sync.WaitGroup
+	results := make(chan struct {
+		Receipts map[int64][]*types.Receipt
+		Err      error
+	}, batchCount)
+
+	for i := 0; i < batchCount; i++ {
+		start := i * batchSize
+		end := (i + 1) * batchSize
+		if end > len(numbers) {
+			end = len(numbers)
+		}
+		currentNumbers := numbers[start:end]
+
+		wg.Add(1)
+		go func(ctx context.Context, currentNumbers []int64, ch chan struct {
+			Receipts map[int64][]*types.Receipt
+			Err      error
+		}) {
+			defer wg.Done()
+			defer func() {
+				if err := recover(); err != nil {
+					ch <- struct {
+						Receipts map[int64][]*types.Receipt
+						Err      error
+					}{
+						Err: fmt.Errorf("%s(panic)", err),
+					}
+				}
+			}()
+
+			receipts, err := batchCall(ctx, currentNumbers)
+			if err != nil {
+				ch <- struct {
+					Receipts map[int64][]*types.Receipt
+					Err      error
+				}{
+					Err: err,
+				}
+				return
+			}
+
+			ch <- struct {
+				Receipts map[int64][]*types.Receipt
+				Err      error
+			}{
+				Receipts: receipts,
+			}
+		}(ctx, currentNumbers, results)
+	}
+
+	wg.Wait()
+	close(results)
+
+	receipts := map[int64][]*types.Receipt{}
+	for result := range results {
+		if result.Err != nil {
+			return nil, result.Err
+		}
+		for key, value := range result.Receipts {
+			receipts[key] = value
+		}
+	}
+
+	return receipts, nil
 }

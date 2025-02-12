@@ -6,5 +6,5 @@ import (
 )
 
 type IHandler interface {
-	Execute(client *eth_client.EthClient, blocks []*types.Block) (error, bool)
+	Execute(client *eth_client.EthClient, blocks []*types.Block, receipts map[int64][]*types.Receipt) (error, bool)
 }

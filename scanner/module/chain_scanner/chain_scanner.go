@@ -60,6 +60,7 @@ func NewChainScanner(svcCtx svc.ServiceContext) (*ChainScanner, error) {
 		minDelayWaitMillisecond: minDelayWaitMillisecond,
 		maxLogsNumber:           maxLogsNumber,
 	}
+
 	return chainScanner, nil
 }
 
@@ -154,7 +155,7 @@ func (chainScanner *ChainScanner) Start() {
 						retry.DelayType(retry.FixedDelay),
 						retry.OnRetry(func(n uint, err error) {
 							retrys += 1
-							logx.Infof("chainScanner retry %d times: %s", retrys, err)
+							logx.Infof("chain scanner retry %d times: %s", retrys, err)
 						}),
 					)
 					if err != nil {
@@ -172,21 +173,91 @@ func (chainScanner *ChainScanner) Start() {
 
 				startTime = time.Now()
 
-				// Query transactions from start to end
+				var wg sync.WaitGroup
+
 				numbers := make([]int64, int(*opt.End-opt.Start))
-				for i := opt.Start; i < *opt.End; i++ {
-					numbers[i-opt.Start] = int64(i)
-				}
-				blockMap, err := client.BatchGetBlockByNumber(ctx, numbers, true)
-				if err != nil {
-					return err
-				}
-				blocks := make([]*types.Block, len(blockMap))
-				for i := opt.Start; i < *opt.End; i++ {
-					blocks[i-opt.Start] = blockMap[int64(i)]
+				queryResults := make(chan struct {
+					Err error
+				}, len(numbers))
+
+				// Query blocks
+				var blocks []*types.Block
+				wg.Add(1)
+				go func(ch chan struct {
+					Err error
+				}) {
+					defer wg.Done()
+					defer func() {
+						if err := recover(); err != nil {
+							ch <- struct {
+								Err error
+							}{
+								Err: fmt.Errorf("%s(panic)", err),
+							}
+						}
+					}()
+
+					for i := opt.Start; i < *opt.End; i++ {
+						numbers[i-opt.Start] = int64(i)
+					}
+					blockMap, err := client.BatchGetBlockByNumber(ctx, numbers, true)
+					if err != nil {
+						ch <- struct {
+							Err error
+						}{
+							Err: err,
+						}
+						return
+					}
+					blocks = make([]*types.Block, len(blockMap))
+					for i := opt.Start; i < *opt.End; i++ {
+						blocks[i-opt.Start] = blockMap[int64(i)]
+					}
+				}(queryResults)
+
+				// Query block receipts
+				var receipts map[int64][]*types.Receipt
+				wg.Add(1)
+				go func(ch chan struct {
+					Err error
+				}) {
+					defer wg.Done()
+					defer func() {
+						if err := recover(); err != nil {
+							ch <- struct {
+								Err error
+							}{
+								Err: fmt.Errorf("%s(panic)", err),
+							}
+						}
+					}()
+
+					for i := opt.Start; i < *opt.End; i++ {
+						numbers[i-opt.Start] = int64(i)
+					}
+					receiptsMap, err := client.BatchGetBlockReceiptsByNumber(ctx, numbers, true)
+					if err != nil {
+						ch <- struct {
+							Err error
+						}{
+							Err: err,
+						}
+						return
+					}
+					receipts = receiptsMap
+				}(queryResults)
+
+				wg.Wait()
+				close(queryResults)
+
+				// Handle results
+				for result := range queryResults {
+					if result.Err != nil {
+						return err
+					}
 				}
 
-				var wg sync.WaitGroup
+				// Execute handlers
 				results := make(chan struct {
 					Err     error
 					Skip    bool
@@ -220,7 +291,7 @@ func (chainScanner *ChainScanner) Start() {
 							}
 						}()
 
-						err, skip := handler.Execute(client, blocks)
+						err, skip := handler.Execute(client, blocks, receipts)
 						ch <- struct {
 							Err     error
 							Skip    bool
@@ -232,6 +303,7 @@ func (chainScanner *ChainScanner) Start() {
 						}
 					}(handler, client, blocks, results)
 				}
+
 				wg.Wait()
 				close(results)
 
@@ -258,6 +330,7 @@ func (chainScanner *ChainScanner) Start() {
 						return err
 					}
 				}
+
 				return nil
 			}(ctx, client)
 			if err != nil {
@@ -298,5 +371,6 @@ func (chainScanner *ChainScanner) ReplayByTxHash(ctx context.Context, txHash str
 		Start: number,
 		End:   &number,
 	})
+
 	return nil
 }
