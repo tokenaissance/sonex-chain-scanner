@@ -1,10 +1,10 @@
 package chain_scanner
 
 import (
-	"github.com/ethereum/go-ethereum/accounts/abi/bind"
-	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/sonex-dex/sonex-chain-scanner/pkg/eth_client"
 )
 
 type IHandler interface {
-	Execute(client *ethclient.Client, opt *bind.FilterOpts, isReplay bool) (error, bool)
+	Execute(client *eth_client.EthClient, blocks []*types.Block) (error, bool)
 }

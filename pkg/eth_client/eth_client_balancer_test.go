@@ -1,4 +1,4 @@
-package node_caller
+package eth_client
 
 import (
 	"context"
@@ -16,12 +16,17 @@ func TestBatchGetBlockByNumber(t *testing.T) {
 	var c config.Config
 	conf.MustLoad("../../test/scanner_local.yaml", &c)
 
-	nodeCaller, err := NewNodeCallerWithUrl(*c.Chain.GetNode())
+	balancer, err := NewEthClientBalancer(c.Chain)
 	if err != nil {
-		t.Errorf("%s\n", err.Error())
+		t.Error(err)
 		return
 	}
-	blocks, err := nodeCaller.BatchGetBlockByNumber(context.Background(), []int64{7945194}, true)
+	client, err := balancer.GetClient(context.Background())
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	blocks, err := client.BatchGetBlockByNumber(context.Background(), []int64{7945194}, true)
 	if err != nil {
 		t.Errorf("%s\n", err.Error())
 		return

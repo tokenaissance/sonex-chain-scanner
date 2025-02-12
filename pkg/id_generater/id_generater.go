@@ -16,7 +16,6 @@ const (
 	machineIDShift = sequenceBits
 )
 
-// Unique ID generater
 type IdGenerater struct {
 	mu        sync.Mutex
 	lastTime  int64
@@ -26,7 +25,7 @@ type IdGenerater struct {
 
 func NewIdGenerater(machineID int64) (*IdGenerater, error) {
 	if machineID < 0 || machineID > maxMachineID {
-		return nil, fmt.Errorf("NewIdGenerater %s", "Machine ID out of range")
+		return nil, fmt.Errorf("%s", "machine id out of range")
 	}
 
 	return &IdGenerater{
@@ -40,7 +39,7 @@ func (sf *IdGenerater) Generate() (int64, error) {
 
 	now := time.Now().UnixMilli()
 	if now < sf.lastTime {
-		return 0, fmt.Errorf("%s", "Clock moved backwards")
+		return 0, fmt.Errorf("%s", "clock moved backwards")
 	}
 	if now == sf.lastTime {
 		sf.sequence = (sf.sequence + 1) & maxSequence

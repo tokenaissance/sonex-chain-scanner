@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	pkg_common "github.com/sonex-dex/sonex-chain-scanner/pkg/common"
+	"github.com/sonex-dex/sonex-chain-scanner/pkg/eth_client"
 	"github.com/sonex-dex/sonex-chain-scanner/pkg/queue"
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/internal/svc"
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/repository"
@@ -14,12 +16,13 @@ import (
 	"github.com/avast/retry-go/v4"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
 type ChainScanner struct {
 	svcCtx                  svc.ServiceContext
+	ethClientBalancer       *eth_client.EthClientBalancer
 	minConfirmations        int64
 	minDelayWaitMillisecond int64
 	maxLogsNumber           int64
@@ -31,6 +34,12 @@ type ChainScanner struct {
 
 func NewChainScanner(svcCtx svc.ServiceContext) (*ChainScanner, error) {
 	conf := svcCtx.Config
+
+	ethClientBalancer, err := eth_client.NewEthClientBalancer(conf.Chain)
+	if err != nil {
+		return nil, err
+	}
+
 	minConfirmations := conf.Chain.MinConfirmations
 	if minConfirmations < 0 {
 		minConfirmations = 5
@@ -46,6 +55,7 @@ func NewChainScanner(svcCtx svc.ServiceContext) (*ChainScanner, error) {
 
 	chainScanner := &ChainScanner{
 		svcCtx:                  svcCtx,
+		ethClientBalancer:       ethClientBalancer,
 		minConfirmations:        minConfirmations,
 		minDelayWaitMillisecond: minDelayWaitMillisecond,
 		maxLogsNumber:           maxLogsNumber,
@@ -53,23 +63,20 @@ func NewChainScanner(svcCtx svc.ServiceContext) (*ChainScanner, error) {
 	return chainScanner, nil
 }
 
-func (cs *ChainScanner) AddHandler(handler IHandler) {
-	cs.handlers = append(cs.handlers, handler)
+func (chainScanner *ChainScanner) AddHandler(handler IHandler) {
+	chainScanner.handlers = append(chainScanner.handlers, handler)
 }
 
-func (cs *ChainScanner) Start() {
-	conf := cs.svcCtx.Config
+func (chainScanner *ChainScanner) Start() {
+	conf := chainScanner.svcCtx.Config
 	ctx, cancel := context.WithCancel(context.Background())
-	cs.cancel = cancel
+	chainScanner.cancel = cancel
 
 	go func(ctx context.Context) {
 		defer func() {
-			if err := recover(); err != nil {
-				logx.Errorf("ChainScanner: ChainId[%d] stopped\nError: %s", conf.Chain.ChainId, err)
-			}
+			logx.Errorf("chain scanner stopped")
 		}()
 
-		opt := &bind.FilterOpts{}
 		for {
 			select {
 			case <-ctx.Done():
@@ -77,35 +84,33 @@ func (cs *ChainScanner) Start() {
 			default:
 			}
 
+			client, err := chainScanner.ethClientBalancer.GetClient(ctx)
+			if err != nil {
+				logx.Errorf("chain scanner error: %s\n", err)
+				continue
+			}
+			opt := &bind.FilterOpts{}
+
 			var startTime time.Time
-			err := func(ctx context.Context) (result error) {
+			err = func(ctx context.Context, client *eth_client.EthClient) (result error) {
 				defer func() {
 					if err := recover(); err != nil {
-						result = fmt.Errorf("%s(panic)", err)
+						result = fmt.Errorf("%s, %s", pkg_common.ERROR_PANIC, err)
 					}
 				}()
 
-				client, err := conf.Chain.GetClient()
-				if err != nil {
-					return err
-				}
-
 				var handlers []IHandler
-				isReplay := false
-				if len(cs.waitForRetryHandlers) == 0 {
-					handlers = cs.handlers
+				if len(chainScanner.waitForRetryHandlers) == 0 {
+					handlers = chainScanner.handlers
 					var start uint64
 					var end *uint64
 
 					// Check replay
-					if replayA, ok := cs.replays.Dequeue(); ok {
+					if replayA, ok := chainScanner.replays.Dequeue(); ok {
 						replay, ok := replayA.(Replay)
 						if ok {
 							start = replay.Start
 							end = replay.End
-							if end != nil {
-								isReplay = true
-							}
 						}
 					}
 
@@ -128,7 +133,7 @@ func (cs *ChainScanner) Start() {
 						start = uint64(prograss.Height)
 					}
 					if end == nil {
-						newEnd := height - uint64(cs.minConfirmations)
+						newEnd := height - uint64(chainScanner.minConfirmations)
 						end = &newEnd
 					}
 
@@ -141,32 +146,45 @@ func (cs *ChainScanner) Start() {
 						if err != nil {
 							return err
 						}
-						newEnd := newHeight - uint64(cs.minConfirmations)
+						newEnd := newHeight - uint64(chainScanner.minConfirmations)
 						end = &newEnd
-						return fmt.Errorf("%s", "Waiting block confirm...")
+						return fmt.Errorf("%s", "waiting block confirm...")
 					},
-						// retry.RetryIf(func(err error) bool { return retrys < 5 }),
-						retry.Delay(time.Millisecond*time.Duration(cs.minDelayWaitMillisecond)),
+						retry.Delay(time.Millisecond*time.Duration(chainScanner.minDelayWaitMillisecond)),
 						retry.DelayType(retry.FixedDelay),
 						retry.OnRetry(func(n uint, err error) {
 							retrys += 1
-							logx.Infof("ChainScanner retry %d times: %s", retrys, err)
+							logx.Infof("chainScanner retry %d times: %s", retrys, err)
 						}),
 					)
 					if err != nil {
 						return err
 					}
-					if *end > start+uint64(cs.maxLogsNumber) {
-						*end = start + uint64(cs.maxLogsNumber)
+					if *end > start+uint64(chainScanner.maxLogsNumber) {
+						*end = start + uint64(chainScanner.maxLogsNumber)
 					}
 					opt.Start = start
 					opt.End = end
 				} else {
-					handlers = cs.waitForRetryHandlers
-					cs.waitForRetryHandlers = []IHandler{}
+					handlers = chainScanner.waitForRetryHandlers
+					chainScanner.waitForRetryHandlers = []IHandler{}
 				}
 
 				startTime = time.Now()
+
+				// Query transactions from start to end
+				numbers := make([]int64, int(*opt.End-opt.Start))
+				for i := opt.Start; i < *opt.End; i++ {
+					numbers[i-opt.Start] = int64(i)
+				}
+				blockMap, err := client.BatchGetBlockByNumber(ctx, numbers, true)
+				if err != nil {
+					return err
+				}
+				blocks := make([]*types.Block, len(blockMap))
+				for i := opt.Start; i < *opt.End; i++ {
+					blocks[i-opt.Start] = blockMap[int64(i)]
+				}
 
 				var wg sync.WaitGroup
 				results := make(chan struct {
@@ -179,9 +197,8 @@ func (cs *ChainScanner) Start() {
 					wg.Add(1)
 					go func(
 						handler IHandler,
-						client *ethclient.Client,
-						opt *bind.FilterOpts,
-						isReplay bool,
+						client *eth_client.EthClient,
+						blocks []*types.Block,
 						ch chan struct {
 							Err     error
 							Skip    bool
@@ -203,7 +220,7 @@ func (cs *ChainScanner) Start() {
 							}
 						}()
 
-						err, skip := handler.Execute(client, opt, isReplay)
+						err, skip := handler.Execute(client, blocks)
 						ch <- struct {
 							Err     error
 							Skip    bool
@@ -213,7 +230,7 @@ func (cs *ChainScanner) Start() {
 							Skip:    skip,
 							Handler: handler,
 						}
-					}(handler, client, opt, isReplay, results)
+					}(handler, client, blocks, results)
 				}
 				wg.Wait()
 				close(results)
@@ -221,11 +238,11 @@ func (cs *ChainScanner) Start() {
 				// Handle results
 				for result := range results {
 					if result.Err != nil && !result.Skip {
-						cs.waitForRetryHandlers = append(cs.waitForRetryHandlers, result.Handler)
-						logx.Errorf("Handler[%s] error: %s\n", reflect.TypeOf(result.Handler).String(), result.Err)
+						chainScanner.waitForRetryHandlers = append(chainScanner.waitForRetryHandlers, result.Handler)
+						logx.Errorf("chain scanner handler[%s] error: %s\n", reflect.TypeOf(result.Handler).String(), result.Err)
 					}
 				}
-				if !isReplay && len(cs.waitForRetryHandlers) == 0 {
+				if len(chainScanner.waitForRetryHandlers) == 0 {
 					conn := repository.NewConn(conf.PostgreSQL.GetConnectString())
 					scanPrograssModel := repository.NewScanPrograssModel(conn)
 					record, err := scanPrograssModel.FindOneByChainId(ctx, conf.Chain.ChainId)
@@ -242,34 +259,33 @@ func (cs *ChainScanner) Start() {
 					}
 				}
 				return nil
-			}(ctx)
+			}(ctx, client)
 			if err != nil {
-				logx.Errorf("ChainScanner error: %s\n", err)
+				logx.Errorf("chain scanner error: %s\n", err)
 				continue
 			}
-			logx.Infof("ChainScanner: ChainId[%d] From %d to %d, cost %d ms", conf.Chain.ChainId, opt.Start, *opt.End, time.Since(startTime).Milliseconds())
+			logx.Infof("chain scanner: from %d to %d, cost %d ms", opt.Start, *opt.End, time.Since(startTime).Milliseconds())
 		}
 	}(ctx)
 }
 
-func (cs *ChainScanner) Stop() {
-	cs.cancel()
+func (chainScanner *ChainScanner) Stop() {
+	chainScanner.cancel()
 }
 
-func (cs *ChainScanner) Replay(request Replay) {
-	cs.replays.Enqueue(request)
+func (chainScanner *ChainScanner) Replay(request Replay) {
+	chainScanner.replays.Enqueue(request)
 }
 
-func (cs *ChainScanner) ReplayByBlockNumber(number uint64) {
-	cs.Replay(Replay{
+func (chainScanner *ChainScanner) ReplayByBlockNumber(number uint64) {
+	chainScanner.Replay(Replay{
 		Start: number,
 		End:   &number,
 	})
 }
 
-func (cs *ChainScanner) ReplayByTxHash(ctx context.Context, txHash string) error {
-	conf := cs.svcCtx.Config
-	client, err := conf.Chain.GetClient()
+func (chainScanner *ChainScanner) ReplayByTxHash(ctx context.Context, txHash string) error {
+	client, err := chainScanner.ethClientBalancer.GetClient(ctx)
 	if err != nil {
 		return err
 	}
@@ -278,7 +294,7 @@ func (cs *ChainScanner) ReplayByTxHash(ctx context.Context, txHash string) error
 		return err
 	}
 	number := receipt.BlockNumber.Uint64()
-	cs.Replay(Replay{
+	chainScanner.Replay(Replay{
 		Start: number,
 		End:   &number,
 	})

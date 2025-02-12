@@ -1,4 +1,4 @@
-package node_caller
+package eth_client
 
 import (
 	"encoding/json"

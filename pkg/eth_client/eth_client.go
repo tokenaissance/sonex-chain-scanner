@@ -1,4 +1,4 @@
-package node_caller
+package eth_client
 
 import (
 	"context"
@@ -16,25 +16,8 @@ import (
 	pkg_common "github.com/sonex-dex/sonex-chain-scanner/pkg/common"
 )
 
-type NodeCaller struct {
-	client *ethclient.Client
-}
-
-func NewNodeCallerWithClient(client *ethclient.Client) (*NodeCaller, error) {
-	if client == nil {
-		return nil, fmt.Errorf("%s", pkg_common.ERROR_INVAILD_PARAMETERS)
-	}
-	return &NodeCaller{
-		client: client,
-	}, nil
-}
-
-func NewNodeCallerWithUrl(url string) (*NodeCaller, error) {
-	client, err := ethclient.Dial(url)
-	if err != nil {
-		return nil, err
-	}
-	return NewNodeCallerWithClient(client)
+type EthClient struct {
+	*ethclient.Client
 }
 
 func toBlockNumArg(number *big.Int) (string, error) {
@@ -50,16 +33,10 @@ func toBlockNumArg(number *big.Int) (string, error) {
 	return "", fmt.Errorf("%s", pkg_common.ERROR_INVAILD_PARAMETERS)
 }
 
-func (nodeCaller *NodeCaller) BatchGetBlockByNumber(ctx context.Context, numbers []int64, full bool) (map[int64]*types.Block, error) {
+func (ethClient *EthClient) BatchGetBlockByNumber(ctx context.Context, numbers []int64, full bool) (map[int64]*types.Block, error) {
 	if len(numbers) == 0 {
 		return map[int64]*types.Block{}, nil
 	}
-
-	b, err := nodeCaller.client.BlockByNumber(ctx, big.NewInt(numbers[0]))
-	if err != nil {
-		return nil, err
-	}
-	_ = b
 
 	batchCall := func(ctx context.Context, numbers []int64, full bool) (map[int64]*types.Block, error) {
 		requests := make([]rpc.BatchElem, len(numbers))
@@ -75,7 +52,7 @@ func (nodeCaller *NodeCaller) BatchGetBlockByNumber(ctx context.Context, numbers
 				Result: &rawMessages[i],
 			}
 		}
-		err := nodeCaller.client.Client().BatchCallContext(ctx, requests)
+		err := ethClient.Client.Client().BatchCallContext(ctx, requests)
 		if err != nil {
 			return nil, err
 		}
@@ -129,7 +106,7 @@ func (nodeCaller *NodeCaller) BatchGetBlockByNumber(ctx context.Context, numbers
 						Result: &uncles[i],
 					}
 				}
-				err = nodeCaller.client.Client().BatchCallContext(ctx, reqs)
+				err = ethClient.Client.Client().BatchCallContext(ctx, reqs)
 				if err != nil {
 					return nil, err
 				}

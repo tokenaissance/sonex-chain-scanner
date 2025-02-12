@@ -30,6 +30,10 @@ func Run(conf config.Config) {
 	if err != nil {
 		panic(err)
 	}
+	err = global.InitEthClientBalancer()
+	if err != nil {
+		panic(err)
+	}
 
 	// Rpc configure
 	s := zrpc.MustNewServer(conf.RpcServerConf, func(grpcServer *grpc.Server) {

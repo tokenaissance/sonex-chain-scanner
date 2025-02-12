@@ -1,4 +1,4 @@
-package node_caller
+package eth_client
 
 import (
 	"github.com/ethereum/go-ethereum/common"
