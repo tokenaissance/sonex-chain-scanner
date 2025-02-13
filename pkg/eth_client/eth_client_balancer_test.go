@@ -26,7 +26,7 @@ func TestBatchGetBlockByNumber(t *testing.T) {
 		t.Error(err)
 		return
 	}
-	blocks, err := client.BatchGetBlockByNumber(context.Background(), []int64{8079828}, true)
+	blocks, err := client.BatchGetBlockByNumber(context.Background(), []int64{8079828, 8079829}, true)
 	if err != nil {
 		t.Error(err)
 		return
@@ -53,7 +53,7 @@ func TestBatchGetBlockReceiptsByNumber(t *testing.T) {
 		t.Error(err)
 		return
 	}
-	receipts, err := client.BatchGetBlockReceiptsByNumber(context.Background(), []int64{8079828}, true)
+	receipts, err := client.BatchGetBlockReceiptsByNumber(context.Background(), []int64{8079828, 8079829}, true)
 	if err != nil {
 		t.Error(err)
 		return

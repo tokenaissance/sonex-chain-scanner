@@ -192,9 +192,12 @@ func (ethClient *EthClient) BatchGetBlockByNumber(ctx context.Context, numbers [
 		}(ctx, currentNumbers, results)
 	}
 
-	wg.Wait()
-	close(results)
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
 
+	// Handle results
 	blocks := map[int64]*types.Block{}
 	for result := range results {
 		if result.Err != nil {
@@ -298,9 +301,12 @@ func (ethClient *EthClient) BatchGetBlockReceiptsByNumber(ctx context.Context, n
 		}(ctx, currentNumbers, results)
 	}
 
-	wg.Wait()
-	close(results)
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
 
+	// Handle results
 	receipts := map[int64][]*types.Receipt{}
 	for result := range results {
 		if result.Err != nil {
