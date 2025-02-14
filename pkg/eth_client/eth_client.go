@@ -34,7 +34,7 @@ func toBlockNumArg(number *big.Int) string {
 	return fmt.Sprintf("<invalid %d>", number)
 }
 
-func (ethClient *EthClient) BatchGetBlockByNumber(ctx context.Context, numbers []int64, full bool) (map[int64]*types.Block, error) {
+func (ethClient *EthClient) BatchGetBlockByNumber(ctx context.Context, numbers []int64, full bool, batchSize int64) (map[int64]*types.Block, error) {
 	if len(numbers) == 0 {
 		return map[int64]*types.Block{}, nil
 	}
@@ -135,9 +135,8 @@ func (ethClient *EthClient) BatchGetBlockByNumber(ctx context.Context, numbers [
 		return result, nil
 	}
 
-	batchSize := 100
-	batchCount := len(numbers) / batchSize
-	if len(numbers)%batchSize > 0 {
+	batchCount := len(numbers) / int(batchSize)
+	if len(numbers)%int(batchSize) > 0 {
 		batchCount++
 	}
 
@@ -148,8 +147,8 @@ func (ethClient *EthClient) BatchGetBlockByNumber(ctx context.Context, numbers [
 	}, batchCount)
 
 	for i := 0; i < batchCount; i++ {
-		start := i * batchSize
-		end := (i + 1) * batchSize
+		start := i * int(batchSize)
+		end := (i + 1) * int(batchSize)
 		if end > len(numbers) {
 			end = len(numbers)
 		}
@@ -211,9 +210,12 @@ func (ethClient *EthClient) BatchGetBlockByNumber(ctx context.Context, numbers [
 	return blocks, nil
 }
 
-func (ethClient *EthClient) BatchGetBlockReceiptsByNumber(ctx context.Context, numbers []int64, full bool) (map[int64][]*types.Receipt, error) {
+func (ethClient *EthClient) BatchGetBlockReceiptsByNumber(ctx context.Context, numbers []int64, batchSize int64) (map[int64][]*types.Receipt, error) {
 	if len(numbers) == 0 {
 		return map[int64][]*types.Receipt{}, nil
+	}
+	if batchSize < 0 {
+		batchSize = 100
 	}
 
 	batchCall := func(ctx context.Context, numbers []int64) (map[int64][]*types.Receipt, error) {
@@ -244,9 +246,8 @@ func (ethClient *EthClient) BatchGetBlockReceiptsByNumber(ctx context.Context, n
 		return result, nil
 	}
 
-	batchSize := 100
-	batchCount := len(numbers) / batchSize
-	if len(numbers)%batchSize > 0 {
+	batchCount := len(numbers) / int(batchSize)
+	if len(numbers)%int(batchSize) > 0 {
 		batchCount++
 	}
 
@@ -257,8 +258,8 @@ func (ethClient *EthClient) BatchGetBlockReceiptsByNumber(ctx context.Context, n
 	}, batchCount)
 
 	for i := 0; i < batchCount; i++ {
-		start := i * batchSize
-		end := (i + 1) * batchSize
+		start := i * int(batchSize)
+		end := (i + 1) * int(batchSize)
 		if end > len(numbers) {
 			end = len(numbers)
 		}

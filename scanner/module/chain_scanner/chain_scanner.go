@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ahmetb/go-linq/v3"
 	pkg_common "github.com/sonex-dex/sonex-chain-scanner/pkg/common"
 	"github.com/sonex-dex/sonex-chain-scanner/pkg/eth_client"
 	"github.com/sonex-dex/sonex-chain-scanner/pkg/queue"
@@ -93,10 +94,10 @@ func (chainScanner *ChainScanner) Start() {
 			opt := &bind.FilterOpts{}
 
 			var startTime time.Time
-			err = func(ctx context.Context, client *eth_client.EthClient) (result error) {
+			err = func(ctx context.Context, client *eth_client.EthClient) (err error) {
 				defer func() {
 					if err := recover(); err != nil {
-						result = fmt.Errorf("%s, %s", pkg_common.ERROR_PANIC, err)
+						err = fmt.Errorf("%s, %s", pkg_common.ERROR_PANIC, err)
 					}
 				}()
 
@@ -181,7 +182,7 @@ func (chainScanner *ChainScanner) Start() {
 				}, len(numbers))
 
 				// Query blocks
-				var blocks []*types.Block
+				var blocks map[int64]*types.Block
 				wg.Add(1)
 				go func(ch chan struct {
 					Err error
@@ -200,7 +201,7 @@ func (chainScanner *ChainScanner) Start() {
 					for i := opt.Start; i < *opt.End; i++ {
 						numbers[i-opt.Start] = int64(i)
 					}
-					blockMap, err := client.BatchGetBlockByNumber(ctx, numbers, true)
+					blockMap, err := client.BatchGetBlockByNumber(ctx, numbers, true, 100)
 					if err != nil {
 						ch <- struct {
 							Err error
@@ -209,10 +210,7 @@ func (chainScanner *ChainScanner) Start() {
 						}
 						return
 					}
-					blocks = make([]*types.Block, len(blockMap))
-					for i := opt.Start; i < *opt.End; i++ {
-						blocks[i-opt.Start] = blockMap[int64(i)]
-					}
+					blocks = blockMap
 				}(queryResults)
 
 				// Query block receipts
@@ -235,7 +233,7 @@ func (chainScanner *ChainScanner) Start() {
 					for i := opt.Start; i < *opt.End; i++ {
 						numbers[i-opt.Start] = int64(i)
 					}
-					receiptsMap, err := client.BatchGetBlockReceiptsByNumber(ctx, numbers, true)
+					receiptsMap, err := client.BatchGetBlockReceiptsByNumber(ctx, numbers, 50)
 					if err != nil {
 						ch <- struct {
 							Err error
@@ -247,13 +245,41 @@ func (chainScanner *ChainScanner) Start() {
 					receipts = receiptsMap
 				}(queryResults)
 
-				wg.Wait()
-				close(queryResults)
+				go func() {
+					wg.Wait()
+					close(queryResults)
+				}()
 
 				// Handle results
 				for result := range queryResults {
 					if result.Err != nil {
-						return err
+						return result.Err
+					}
+				}
+
+				// Parse transactions
+				transactions := []Transaction{}
+				for blockNumber := int64(opt.Start); blockNumber < int64(*opt.End); blockNumber++ {
+					block, ok := blocks[blockNumber]
+					if !ok {
+						return fmt.Errorf("miss block[%d] data", blockNumber)
+					}
+					blockReceipts, ok := receipts[blockNumber]
+					if !ok {
+						return fmt.Errorf("miss block[%d] receipt data", blockNumber)
+					}
+
+					for _, tx := range block.Transactions() {
+						receiptA := linq.From(blockReceipts).FirstWithT(func(item *types.Receipt) bool {
+							return item.TxHash == tx.Hash()
+						})
+						if receiptA == nil {
+							return fmt.Errorf("miss tx[%s] receipt data", tx.Hash())
+						}
+						transactions = append(transactions, Transaction{
+							Block:   block,
+							Receipt: receiptA.(*types.Receipt),
+						})
 					}
 				}
 
@@ -262,6 +288,7 @@ func (chainScanner *ChainScanner) Start() {
 					Err     error
 					Skip    bool
 					Handler IHandler
+					Cost    time.Duration
 				}, len(handlers))
 
 				for _, handler := range handlers {
@@ -269,11 +296,12 @@ func (chainScanner *ChainScanner) Start() {
 					go func(
 						handler IHandler,
 						client *eth_client.EthClient,
-						blocks []*types.Block,
+						blocks map[int64]*types.Block,
 						ch chan struct {
 							Err     error
 							Skip    bool
 							Handler IHandler
+							Cost    time.Duration
 						},
 					) {
 						defer wg.Done()
@@ -283,6 +311,7 @@ func (chainScanner *ChainScanner) Start() {
 									Err     error
 									Skip    bool
 									Handler IHandler
+									Cost    time.Duration
 								}{
 									Err:     fmt.Errorf("%s(panic)", err),
 									Skip:    false,
@@ -291,21 +320,26 @@ func (chainScanner *ChainScanner) Start() {
 							}
 						}()
 
-						err, skip := handler.Execute(client, blocks, receipts)
+						startTime := time.Now()
+						err, skip := handler.Execute(client, int64(opt.Start), int64(*opt.End), transactions)
 						ch <- struct {
 							Err     error
 							Skip    bool
 							Handler IHandler
+							Cost    time.Duration
 						}{
 							Err:     err,
 							Skip:    skip,
 							Handler: handler,
+							Cost:    time.Since(startTime),
 						}
 					}(handler, client, blocks, results)
 				}
 
-				wg.Wait()
-				close(results)
+				go func() {
+					wg.Wait()
+					close(results)
+				}()
 
 				// Handle results
 				for result := range results {
@@ -313,7 +347,9 @@ func (chainScanner *ChainScanner) Start() {
 						chainScanner.waitForRetryHandlers = append(chainScanner.waitForRetryHandlers, result.Handler)
 						logx.Errorf("chain scanner handler[%s] error: %s\n", reflect.TypeOf(result.Handler).String(), result.Err)
 					}
+					logx.Infof("chain scanner handler[%s] executed: cost %s \n", reflect.TypeOf(result.Handler).String(), result.Cost)
 				}
+
 				if len(chainScanner.waitForRetryHandlers) == 0 {
 					conn := repository.NewConn(conf.PostgreSQL.GetConnectString())
 					scanPrograssModel := repository.NewScanPrograssModel(conn)
@@ -337,7 +373,7 @@ func (chainScanner *ChainScanner) Start() {
 				logx.Errorf("chain scanner error: %s\n", err)
 				continue
 			}
-			logx.Infof("chain scanner: from %d to %d, cost %d ms", opt.Start, *opt.End, time.Since(startTime).Milliseconds())
+			logx.Infof("chain scanner: from %d to %d, cost %s", opt.Start, *opt.End, time.Since(startTime))
 		}
 	}(ctx)
 }
