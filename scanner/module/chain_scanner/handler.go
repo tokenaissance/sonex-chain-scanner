@@ -5,5 +5,5 @@ import (
 )
 
 type IHandler interface {
-	Execute(client *eth_client.EthClient, from int64, to int64, transactions []Transaction) (error, bool)
+	Execute(client *eth_client.EthClient, from int64, to int64, transactions []*eth_client.Transaction) (error, bool)
 }

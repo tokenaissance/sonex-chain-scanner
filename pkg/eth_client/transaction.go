@@ -1,4 +1,4 @@
-package chain_scanner
+package eth_client
 
 import "github.com/ethereum/go-ethereum/core/types"
 

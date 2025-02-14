@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"sync"
 
+	"github.com/ahmetb/go-linq/v3"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -319,4 +320,110 @@ func (ethClient *EthClient) BatchGetBlockReceiptsByNumber(ctx context.Context, n
 	}
 
 	return receipts, nil
+}
+
+func (ethClient *EthClient) BatchGetTransactions(ctx context.Context, numbers []int64, batchSize int64) (map[int64][]*Transaction, error) {
+	var wg sync.WaitGroup
+	results := make(chan struct {
+		Err error
+	}, len(numbers))
+
+	// Query blocks
+	var blocks map[int64]*types.Block
+	wg.Add(1)
+	go func(ctx context.Context, ch chan struct {
+		Err error
+	}) {
+		defer wg.Done()
+		defer func() {
+			if err := recover(); err != nil {
+				ch <- struct {
+					Err error
+				}{
+					Err: fmt.Errorf("%s(panic)", err),
+				}
+			}
+		}()
+
+		blockMap, err := ethClient.BatchGetBlockByNumber(ctx, numbers, true, batchSize)
+		if err != nil {
+			ch <- struct {
+				Err error
+			}{
+				Err: err,
+			}
+			return
+		}
+		blocks = blockMap
+	}(ctx, results)
+
+	// Query block receipts
+	var receipts map[int64][]*types.Receipt
+	wg.Add(1)
+	go func(ctx context.Context, ch chan struct {
+		Err error
+	}) {
+		defer wg.Done()
+		defer func() {
+			if err := recover(); err != nil {
+				ch <- struct {
+					Err error
+				}{
+					Err: fmt.Errorf("%s(panic)", err),
+				}
+			}
+		}()
+
+		receiptsMap, err := ethClient.BatchGetBlockReceiptsByNumber(ctx, numbers, batchSize)
+		if err != nil {
+			ch <- struct {
+				Err error
+			}{
+				Err: err,
+			}
+			return
+		}
+		receipts = receiptsMap
+	}(ctx, results)
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Handle results
+	for result := range results {
+		if result.Err != nil {
+			return nil, result.Err
+		}
+	}
+
+	// Parse transactions
+	transactions := map[int64][]*Transaction{}
+	for _, blockNumber := range numbers {
+		block, ok := blocks[blockNumber]
+		if !ok {
+			return nil, fmt.Errorf("miss block[%d] data", blockNumber)
+		}
+		blockReceipts, ok := receipts[blockNumber]
+		if !ok {
+			return nil, fmt.Errorf("miss block[%d] receipt data", blockNumber)
+		}
+		transactions[blockNumber] = []*Transaction{}
+
+		for _, tx := range block.Transactions() {
+			receiptA := linq.From(blockReceipts).FirstWithT(func(item *types.Receipt) bool {
+				return item.TxHash == tx.Hash()
+			})
+			if receiptA == nil {
+				return nil, fmt.Errorf("miss tx[%s] receipt data", tx.Hash())
+			}
+			transactions[blockNumber] = append(transactions[blockNumber], &Transaction{
+				Block:   block,
+				Receipt: receiptA.(*types.Receipt),
+			})
+		}
+	}
+
+	return transactions, nil
 }
