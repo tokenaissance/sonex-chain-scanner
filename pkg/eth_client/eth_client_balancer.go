@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/ahmetb/go-linq/v3"
@@ -15,19 +16,23 @@ import (
 )
 
 type EthClientBalancer struct {
-	nodes []*node
+	nodes   []*node
+	clients map[string]*EthClient
 }
 
 type node struct {
-	url         string
-	weight      int64
-	errorCount  int
-	lastFailure time.Time
+	url          string
+	weight       int64
+	failureCount int
+	lastFailure  time.Time
 }
 
 func NewEthClientBalancer(chainConf config.ChainConfig) (*EthClientBalancer, error) {
 	var nodes []*node
 	for url, weight := range chainConf.Nodes {
+		if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+			continue
+		}
 		_, err := ethclient.Dial(url)
 		if err != nil {
 			continue
@@ -45,7 +50,7 @@ func (ethClientBalancer *EthClientBalancer) getNode() *node {
 	// Check availability
 	availableNodes := []node{}
 	linq.From(ethClientBalancer.nodes).ForEachT(func(item *node) {
-		if item.errorCount > 10 && time.Since(item.lastFailure) < time.Minute*5 {
+		if item.failureCount > 10 && time.Since(item.lastFailure) < time.Minute*5 {
 			return
 		}
 		availableNodes = append(availableNodes, *item)
@@ -66,23 +71,35 @@ func (ethClientBalancer *EthClientBalancer) getNode() *node {
 	return nil
 }
 
+func (ethClientBalancer *EthClientBalancer) increaseFailureCount(url string) {
+	nodeA := linq.From(ethClientBalancer.nodes).FirstWithT(func(item *node) bool { return item.url == url })
+	if nodeA == nil {
+		return
+	}
+	node := nodeA.(*node)
+	node.failureCount++
+	node.lastFailure = time.Now()
+}
+
 func (ethClientBalancer *EthClientBalancer) GetClient(ctx context.Context) (*EthClient, error) {
-	n := ethClientBalancer.getNode()
-	if n == nil {
+	node := ethClientBalancer.getNode()
+	if node == nil {
 		return nil, fmt.Errorf("%s", common.ERROR_NO_AVAILABLE_NODE)
 	}
+	client, ok := ethClientBalancer.clients[node.url]
+	if ok {
+		return client, nil
+	}
+
 	tr := transport{
 		OnFailure: func(req *http.Request, err error) {
-			nA := linq.From(ethClientBalancer.nodes).FirstWithT(func(item *node) bool { return item.url == n.url })
-			if nA == nil {
-				return
-			}
-			nn := nA.(*node)
-			nn.errorCount++
-			nn.lastFailure = time.Now()
+			ethClientBalancer.increaseFailureCount(node.url)
 		},
 	}
-	rpcClient, err := rpc.DialOptions(context.Background(), n.url, rpc.WithHTTPClient(&http.Client{Transport: &tr}))
+	rpcClient, err := rpc.DialOptions(
+		context.Background(), node.url,
+		rpc.WithHTTPClient(&http.Client{Transport: &tr}),
+	)
 	if err != nil {
 		return nil, err
 	}
