@@ -14,8 +14,8 @@ message ChainScannerMetaRes {
 }
 
 message ChainScannerReplayReq {
-    uint64 start = 1;
-    optional uint64 end = 2;
+    int64 start = 1;
+    optional int64 end = 2;
 }
 
 service ChainScannerService {

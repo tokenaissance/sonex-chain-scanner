@@ -39,10 +39,17 @@ func (l *ReplayLogic) Replay(in *pb.ChainScannerReplayReq) (*pb.EmptyRes, error)
 	default:
 		return nil, err
 	}
-	if in.Start < uint64(record.Height) {
-		replay := chain_scanner.Replay{Start: in.Start, End: in.End}
-		global.Replay(replay)
+	start := in.Start
+	var end int64
+	if start > record.Height {
+		start = record.Height
 	}
+	if in.End == nil || *in.End > record.Height {
+		end = record.Height
+	} else {
+		end = *in.End
+	}
+	global.Replay(chain_scanner.Replay{Start: start, End: end})
 
 	return &pb.EmptyRes{}, nil
 }

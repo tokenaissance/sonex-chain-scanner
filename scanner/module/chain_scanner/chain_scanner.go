@@ -7,28 +7,26 @@ import (
 	"sync"
 	"time"
 
-	pkg_common "github.com/sonex-dex/sonex-chain-scanner/pkg/common"
 	"github.com/sonex-dex/sonex-chain-scanner/pkg/eth_client"
-	"github.com/sonex-dex/sonex-chain-scanner/pkg/queue"
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/internal/svc"
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/repository"
 
 	"github.com/avast/retry-go/v4"
-	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
 type ChainScanner struct {
-	svcCtx                  svc.ServiceContext
-	ethClientBalancer       *eth_client.EthClientBalancer
-	minConfirmations        int64
-	minDelayWaitMillisecond int64
-	maxLogsNumber           int64
-	handlers                []IHandler
-	waitForRetryHandlers    []IHandler
-	cancel                  context.CancelFunc
-	replays                 queue.Queue
+	svcCtx                   svc.ServiceContext
+	ethClientBalancer        *eth_client.EthClientBalancer
+	minConfirmations         int64
+	minDelayWaitMilliseconds int64
+	maxDelayWaitMilliseconds int64
+	maxBlockNumber           int64
+	handlers                 []IHandler
+	waitForRetryHandlers     []IHandler
+	cancel                   context.CancelFunc
+	replay                   *Replay
 }
 
 func NewChainScanner(svcCtx svc.ServiceContext) (*ChainScanner, error) {
@@ -43,24 +41,133 @@ func NewChainScanner(svcCtx svc.ServiceContext) (*ChainScanner, error) {
 	if minConfirmations < 0 {
 		minConfirmations = 5
 	}
-	minDelayWaitMillisecond := conf.Chain.MinDelayWaitMillisecond
-	if minDelayWaitMillisecond < 0 {
-		minDelayWaitMillisecond = 2000
+	minDelayWaitMilliseconds := conf.Chain.MinDelayWaitMilliseconds
+	if minDelayWaitMilliseconds < 0 {
+		minDelayWaitMilliseconds = 2000
 	}
-	maxLogsNumber := conf.Chain.MaxLogsNumber
-	if maxLogsNumber < 0 {
-		maxLogsNumber = 1000
+	maxDelayWaitMilliseconds := conf.Chain.MaxDelayWaitMilliseconds
+	if maxDelayWaitMilliseconds < 0 {
+		maxDelayWaitMilliseconds = 10000
+	}
+	maxBlockNumber := conf.Chain.MaxBlocksNumber
+	if maxBlockNumber < 0 {
+		maxBlockNumber = 1000
 	}
 
 	chainScanner := &ChainScanner{
-		svcCtx:                  svcCtx,
-		ethClientBalancer:       ethClientBalancer,
-		minConfirmations:        minConfirmations,
-		minDelayWaitMillisecond: minDelayWaitMillisecond,
-		maxLogsNumber:           maxLogsNumber,
+		svcCtx:                   svcCtx,
+		ethClientBalancer:        ethClientBalancer,
+		minConfirmations:         minConfirmations,
+		minDelayWaitMilliseconds: minDelayWaitMilliseconds,
+		maxDelayWaitMilliseconds: maxDelayWaitMilliseconds,
+		maxBlockNumber:           maxBlockNumber,
 	}
 
 	return chainScanner, nil
+}
+
+func (chainScanner *ChainScanner) scanBlock(ctx context.Context, client *eth_client.EthClient, start int64, end int64, handlers []IHandler, isReplay bool) ([]IHandler, error) {
+	prefix := "chain scanner"
+	if isReplay {
+		prefix = "chain replay scanner"
+	}
+
+	if start > end || len(handlers) == 0 {
+		return []IHandler{}, nil
+	}
+
+	startTime := time.Now()
+
+	// Query transactions
+	numbers := make([]int64, end-start)
+	for i := start; i < end; i++ {
+		numbers[i-start] = i
+	}
+	transactionMap, err := client.BatchGetTransactions(ctx, numbers, 50)
+	if err != nil {
+		return []IHandler{}, nil
+	}
+	transactions := []*eth_client.Transaction{}
+	for blockNumber := start; blockNumber < end; blockNumber++ {
+		txs, ok := transactionMap[blockNumber]
+		if !ok {
+			return []IHandler{}, fmt.Errorf("miss block[%d] transactions data", blockNumber)
+		}
+		transactions = append(transactions, txs...)
+	}
+
+	// Execute handlers
+	var wg sync.WaitGroup
+	results := make(chan struct {
+		Err     error
+		Skip    bool
+		Handler IHandler
+		Cost    time.Duration
+	}, len(handlers))
+
+	for _, handler := range handlers {
+		wg.Add(1)
+		go func(
+			handler IHandler,
+			client *eth_client.EthClient,
+			transactions []*eth_client.Transaction,
+			ch chan struct {
+				Err     error
+				Skip    bool
+				Handler IHandler
+				Cost    time.Duration
+			},
+		) {
+			defer wg.Done()
+			defer func() {
+				if err := recover(); err != nil {
+					ch <- struct {
+						Err     error
+						Skip    bool
+						Handler IHandler
+						Cost    time.Duration
+					}{
+						Err:     fmt.Errorf("%s(panic)", err),
+						Skip:    false,
+						Handler: handler,
+					}
+				}
+			}()
+
+			startTime := time.Now()
+			err, skip := handler.Execute(client, start, end, transactions)
+			ch <- struct {
+				Err     error
+				Skip    bool
+				Handler IHandler
+				Cost    time.Duration
+			}{
+				Err:     err,
+				Skip:    skip,
+				Handler: handler,
+				Cost:    time.Since(startTime),
+			}
+		}(handler, client, transactions, results)
+	}
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Handle results
+	waitForRetryHandlers := []IHandler{}
+	for result := range results {
+		if result.Err != nil && !result.Skip {
+			waitForRetryHandlers = append(chainScanner.waitForRetryHandlers, result.Handler)
+			logx.Errorf("handler[%s], %s", reflect.TypeOf(result.Handler).String(), result.Err)
+		}
+		logx.Infof("%s handler[%s] executed: cost %s", prefix, reflect.TypeOf(result.Handler).String(), result.Cost)
+	}
+
+	logx.Infof("%s: from %d to %d, tx count %d, retry count %d, cost %s", prefix, start, end, len(transactions), len(waitForRetryHandlers), time.Since(startTime))
+
+	return waitForRetryHandlers, nil
 }
 
 func (chainScanner *ChainScanner) AddHandler(handler IHandler) {
@@ -72,9 +179,10 @@ func (chainScanner *ChainScanner) Start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	chainScanner.cancel = cancel
 
+	// Main scan
 	go func(ctx context.Context) {
 		defer func() {
-			logx.Errorf("chain scanner stopped")
+			logx.Errorf("chain main scanner stopped")
 		}()
 
 		for {
@@ -84,205 +192,149 @@ func (chainScanner *ChainScanner) Start() {
 			default:
 			}
 
+			var handlers []IHandler
+			var start int64
+			var end int64
+
 			client, err := chainScanner.ethClientBalancer.GetClient(ctx)
 			if err != nil {
-				logx.Errorf("chain scanner error: %s\n", err)
+				logx.Errorf("chain scanner error: %s", err)
 				continue
 			}
-			opt := &bind.FilterOpts{}
 
-			var startTime time.Time
-			var transactions []*eth_client.Transaction
-			err = func(ctx context.Context, client *eth_client.EthClient) (err error) {
-				defer func() {
-					if err := recover(); err != nil {
-						err = fmt.Errorf("%s, %s", pkg_common.ERROR_PANIC, err)
+			if len(chainScanner.waitForRetryHandlers) == 0 {
+				handlers = chainScanner.handlers
+
+				// Check start and end
+				height, err := client.BlockNumber(ctx)
+				if err != nil {
+					logx.Errorf("chain scanner error: %s", err)
+					continue
+				}
+				if start <= 0 {
+					conn := repository.NewConn(conf.PostgreSQL.GetConnectString())
+					scanPrograssModel := repository.NewScanPrograssModel(conn)
+					prograss, err := scanPrograssModel.FindOneByChainId(ctx, conf.Chain.ChainId)
+					switch err {
+					case repository.ErrNotFound:
+						prograss = &repository.ScanPrograss{Height: int64(height - 1)}
+					case nil:
+					default:
+						logx.Errorf("chain scanner error: %s", err)
+						continue
 					}
-				}()
+					start = prograss.Height
+				}
 
-				var handlers []IHandler
-				if len(chainScanner.waitForRetryHandlers) == 0 {
-					handlers = chainScanner.handlers
-					var start uint64
-					var end *uint64
-
-					// Check replay
-					if replayA, ok := chainScanner.replays.Dequeue(); ok {
-						replay, ok := replayA.(Replay)
-						if ok {
-							start = replay.Start
-							end = replay.End
-						}
-					}
-
-					// Check start and end
+				err = retry.Do(func() error {
 					height, err := client.BlockNumber(ctx)
 					if err != nil {
 						return err
 					}
-					if start <= 0 {
-						conn := repository.NewConn(conf.PostgreSQL.GetConnectString())
-						scanPrograssModel := repository.NewScanPrograssModel(conn)
-						prograss, err := scanPrograssModel.FindOneByChainId(ctx, conf.Chain.ChainId)
-						switch err {
-						case repository.ErrNotFound:
-							prograss = &repository.ScanPrograss{Height: int64(height - 1)}
-						case nil:
-						default:
-							return err
+					end = int64(height) - chainScanner.minConfirmations
+					if end > start {
+						return nil
+					}
+					return fmt.Errorf("%s", "waiting block confirm...")
+				},
+					retry.Attempts(0),
+					retry.DelayType(retry.DelayTypeFunc(func(n uint, err error, config *retry.Config) time.Duration {
+						delay := chainScanner.minDelayWaitMilliseconds * int64(n)
+						if delay > chainScanner.maxDelayWaitMilliseconds {
+							delay = chainScanner.maxDelayWaitMilliseconds
 						}
-						start = uint64(prograss.Height)
-					}
-					if end == nil {
-						newEnd := height - uint64(chainScanner.minConfirmations)
-						end = &newEnd
-					}
-
-					err = retry.Do(func() error {
-						if *end > start {
-							return nil
-						}
-						newHeight, err := client.BlockNumber(ctx)
-						if err != nil {
-							return err
-						}
-						newEnd := newHeight - uint64(chainScanner.minConfirmations)
-						end = &newEnd
-						return fmt.Errorf("%s", "waiting block confirm...")
-					},
-						retry.Attempts(0),
-						retry.DelayType(retry.DelayTypeFunc(func(n uint, err error, config *retry.Config) time.Duration {
-							return time.Millisecond * time.Duration(chainScanner.minDelayWaitMillisecond*int64(n))
-						})),
-						retry.OnRetry(func(n uint, err error) {
-							logx.Infof("chain scanner retry %d times: %s", n+1, err)
-						}),
-					)
-					if err != nil {
-						return err
-					}
-					if *end > start+uint64(chainScanner.maxLogsNumber) {
-						*end = start + uint64(chainScanner.maxLogsNumber)
-					}
-					opt.Start = start
-					opt.End = end
-				} else {
-					handlers = chainScanner.waitForRetryHandlers
-					chainScanner.waitForRetryHandlers = []IHandler{}
-				}
-
-				startTime = time.Now()
-
-				// Query transactions
-				numbers := make([]int64, int(*opt.End-opt.Start))
-				for i := opt.Start; i < *opt.End; i++ {
-					numbers[i-opt.Start] = int64(i)
-				}
-				transactionMap, err := client.BatchGetTransactions(ctx, numbers, 50)
+						return time.Millisecond * time.Duration(delay)
+					})),
+					retry.OnRetry(func(n uint, err error) {
+						logx.Infof("chain scanner retry %d times: %s", n+1, err)
+					}),
+				)
 				if err != nil {
-					return err
+					logx.Errorf("chain scanner retry failed: %s", err)
 				}
-				transactions = []*eth_client.Transaction{}
-				for blockNumber := int64(opt.Start); blockNumber < int64(*opt.End); blockNumber++ {
-					txs, ok := transactionMap[blockNumber]
-					if !ok {
-						return fmt.Errorf("miss block[%d] transactions data", blockNumber)
-					}
-					transactions = append(transactions, txs...)
+				if end > start+chainScanner.maxBlockNumber {
+					end = start + chainScanner.maxBlockNumber
 				}
+			} else {
+				handlers = chainScanner.waitForRetryHandlers
+				chainScanner.waitForRetryHandlers = []IHandler{}
+			}
 
-				// Execute handlers
-				var wg sync.WaitGroup
-				results := make(chan struct {
-					Err     error
-					Skip    bool
-					Handler IHandler
-					Cost    time.Duration
-				}, len(handlers))
-
-				for _, handler := range handlers {
-					wg.Add(1)
-					go func(
-						handler IHandler,
-						client *eth_client.EthClient,
-						transactions []*eth_client.Transaction,
-						ch chan struct {
-							Err     error
-							Skip    bool
-							Handler IHandler
-							Cost    time.Duration
-						},
-					) {
-						defer wg.Done()
-						defer func() {
-							if err := recover(); err != nil {
-								ch <- struct {
-									Err     error
-									Skip    bool
-									Handler IHandler
-									Cost    time.Duration
-								}{
-									Err:     fmt.Errorf("%s(panic)", err),
-									Skip:    false,
-									Handler: handler,
-								}
-							}
-						}()
-
-						startTime := time.Now()
-						err, skip := handler.Execute(client, int64(opt.Start), int64(*opt.End), transactions)
-						ch <- struct {
-							Err     error
-							Skip    bool
-							Handler IHandler
-							Cost    time.Duration
-						}{
-							Err:     err,
-							Skip:    skip,
-							Handler: handler,
-							Cost:    time.Since(startTime),
-						}
-					}(handler, client, transactions, results)
-				}
-
-				go func() {
-					wg.Wait()
-					close(results)
-				}()
-
-				// Handle results
-				for result := range results {
-					if result.Err != nil && !result.Skip {
-						chainScanner.waitForRetryHandlers = append(chainScanner.waitForRetryHandlers, result.Handler)
-						logx.Errorf("chain scanner handler[%s] error: %s\n", reflect.TypeOf(result.Handler).String(), result.Err)
-					}
-					logx.Infof("chain scanner handler[%s] executed: cost %s \n", reflect.TypeOf(result.Handler).String(), result.Cost)
-				}
-
-				if len(chainScanner.waitForRetryHandlers) == 0 {
-					conn := repository.NewConn(conf.PostgreSQL.GetConnectString())
-					scanPrograssModel := repository.NewScanPrograssModel(conn)
-					record, err := scanPrograssModel.FindOneByChainId(ctx, conf.Chain.ChainId)
-					switch err {
-					case repository.ErrNotFound:
-						scanPrograssModel.New(ctx, &repository.ScanPrograss{ChainId: conf.Chain.ChainId, Height: int64(*opt.End) + 1})
-					case nil:
-						err = scanPrograssModel.UpdateHeight(ctx, &repository.ScanPrograss{Id: record.Id, ChainId: conf.Chain.ChainId, Height: int64(*opt.End) + 1})
-						if err != nil {
-							return err
-						}
-					default:
-						return err
-					}
-				}
-
-				return nil
-			}(ctx, client)
+			waitForRetryHandlers, err := chainScanner.scanBlock(ctx, client, start, end, handlers, false)
 			if err != nil {
-				logx.Errorf("chain scanner error: %s\n", err)
+				logx.Errorf("chain scanner error: %s", err)
 				continue
 			}
-			logx.Infof("chain scanner: from %d to %d, tx count %d, cost %s", opt.Start, *opt.End, len(transactions), time.Since(startTime))
+			chainScanner.waitForRetryHandlers = waitForRetryHandlers
+
+			if len(chainScanner.waitForRetryHandlers) == 0 {
+				conn := repository.NewConn(conf.PostgreSQL.GetConnectString())
+				scanPrograssModel := repository.NewScanPrograssModel(conn)
+				record, err := scanPrograssModel.FindOneByChainId(ctx, conf.Chain.ChainId)
+				switch err {
+				case repository.ErrNotFound:
+					scanPrograssModel.New(ctx, &repository.ScanPrograss{ChainId: conf.Chain.ChainId, Height: end + 1})
+				case nil:
+					err = scanPrograssModel.UpdateHeight(ctx, &repository.ScanPrograss{Id: record.Id, ChainId: conf.Chain.ChainId, Height: end + 1})
+					if err != nil {
+						logx.Errorf("chain scanner error: %s", err)
+						continue
+					}
+				default:
+					logx.Errorf("chain scanner error: %s", err)
+					continue
+				}
+			}
+		}
+	}(ctx)
+
+	// Replay scan
+	go func(ctx context.Context) {
+		defer func() {
+			logx.Errorf("chain replay scanner stopped")
+		}()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				time.Sleep(1000)
+			}
+
+			if chainScanner.replay == nil {
+				continue
+			}
+
+			// Check start/end
+			start := chainScanner.replay.Start
+			end := chainScanner.replay.End
+
+			if start > end {
+				chainScanner.replay = nil
+				continue
+			}
+			if end > start+chainScanner.maxBlockNumber {
+				end = start + chainScanner.maxBlockNumber
+			}
+
+			client, err := chainScanner.ethClientBalancer.GetClient(ctx)
+			if err != nil {
+				logx.Errorf("chain replay scanner error: %s", err)
+				continue
+			}
+			waitForRetryHandlers, err := chainScanner.scanBlock(ctx, client, start, end, chainScanner.handlers, true)
+			if err != nil {
+				logx.Errorf("chain replay scanner error: %s", err)
+				continue
+			}
+
+			if len(waitForRetryHandlers) > 0 {
+				logx.Errorf("chain replay scanner error: %s", "some handler executed failed")
+				chainScanner.replay = nil
+			} else {
+				chainScanner.replay.Start = end + 1
+			}
 		}
 	}(ctx)
 }
@@ -292,13 +344,13 @@ func (chainScanner *ChainScanner) Stop() {
 }
 
 func (chainScanner *ChainScanner) Replay(request Replay) {
-	chainScanner.replays.Enqueue(request)
+	chainScanner.replay = &request
 }
 
-func (chainScanner *ChainScanner) ReplayByBlockNumber(number uint64) {
+func (chainScanner *ChainScanner) ReplayByBlockNumber(number int64) {
 	chainScanner.Replay(Replay{
 		Start: number,
-		End:   &number,
+		End:   number,
 	})
 }
 
@@ -311,10 +363,10 @@ func (chainScanner *ChainScanner) ReplayByTxHash(ctx context.Context, txHash str
 	if err != nil {
 		return err
 	}
-	number := receipt.BlockNumber.Uint64()
+	number := receipt.BlockNumber.Int64()
 	chainScanner.Replay(Replay{
 		Start: number,
-		End:   &number,
+		End:   number,
 	})
 
 	return nil
