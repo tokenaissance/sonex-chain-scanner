@@ -420,6 +420,7 @@ func (ethClient *EthClient) BatchGetTransactions(ctx context.Context, numbers []
 			}
 			transactions[blockNumber] = append(transactions[blockNumber], &Transaction{
 				Block:   block,
+				Tx:      tx,
 				Receipt: receiptA.(*types.Receipt),
 			})
 		}
