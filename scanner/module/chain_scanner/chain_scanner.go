@@ -135,7 +135,7 @@ func (chainScanner *ChainScanner) scanBlock(ctx context.Context, client *eth_cli
 			}()
 
 			startTime := time.Now()
-			err, skip := handler.Execute(client, start, end, transactions)
+			err, skip := handler.Execute(ctx, client, start, end, transactions)
 			ch <- struct {
 				Err     error
 				Skip    bool
