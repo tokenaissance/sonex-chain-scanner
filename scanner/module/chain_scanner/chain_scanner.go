@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sonex-dex/sonex-chain-scanner/pkg/eth_client"
+	scanner_common "github.com/sonex-dex/sonex-chain-scanner/scanner/common"
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/internal/svc"
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/repository"
 
@@ -182,7 +183,7 @@ func (chainScanner *ChainScanner) Start() {
 	// Main scan
 	go func(ctx context.Context) {
 		defer func() {
-			logx.Errorf("chain main scanner stopped")
+			logx.Errorf("%s", scanner_common.ERROR_EVENT_HANDLE_STOPPED)
 		}()
 
 		for {
@@ -198,7 +199,7 @@ func (chainScanner *ChainScanner) Start() {
 
 			client, err := chainScanner.ethClientBalancer.GetClient(ctx)
 			if err != nil {
-				logx.Errorf("chain scanner error: %s", err)
+				logx.Errorf("%s: %s", scanner_common.ERROR_EVENT_HANDLE, err)
 				continue
 			}
 
@@ -208,7 +209,7 @@ func (chainScanner *ChainScanner) Start() {
 				// Check start and end
 				height, err := client.BlockNumber(ctx)
 				if err != nil {
-					logx.Errorf("chain scanner error: %s", err)
+					logx.Errorf("%s: %s", scanner_common.ERROR_EVENT_HANDLE, err)
 					continue
 				}
 				if start <= 0 {
@@ -220,7 +221,7 @@ func (chainScanner *ChainScanner) Start() {
 						prograss = &repository.ScanPrograss{Height: int64(height - 1)}
 					case nil:
 					default:
-						logx.Errorf("chain scanner error: %s", err)
+						logx.Errorf("%s: %s", scanner_common.ERROR_EVENT_HANDLE, err)
 						continue
 					}
 					start = prograss.Height
@@ -235,7 +236,7 @@ func (chainScanner *ChainScanner) Start() {
 					if end > start {
 						return nil
 					}
-					return fmt.Errorf("%s", "waiting block confirm...")
+					return fmt.Errorf("%s", scanner_common.ERROR_EVENT_HANDLE)
 				},
 					retry.Attempts(0),
 					retry.DelayType(retry.DelayTypeFunc(func(n uint, err error, config *retry.Config) time.Duration {
@@ -246,11 +247,11 @@ func (chainScanner *ChainScanner) Start() {
 						return time.Millisecond * time.Duration(delay)
 					})),
 					retry.OnRetry(func(n uint, err error) {
-						logx.Infof("chain scanner retry %d times: %s", n+1, err)
+						logx.Infof("%s: %d times, %s", scanner_common.ERROR_EVENT_HANDLE_RETRY, n+1, err)
 					}),
 				)
 				if err != nil {
-					logx.Errorf("chain scanner retry failed: %s", err)
+					logx.Errorf("%s: %s", scanner_common.ERROR_EVENT_HANDLE_RETRY, err)
 				}
 				if end > start+chainScanner.maxBlockNumber {
 					end = start + chainScanner.maxBlockNumber
@@ -262,7 +263,7 @@ func (chainScanner *ChainScanner) Start() {
 
 			waitForRetryHandlers, err := chainScanner.scanBlock(ctx, client, start, end, handlers, false)
 			if err != nil {
-				logx.Errorf("chain scanner error: %s", err)
+				logx.Errorf("%s: %s", scanner_common.ERROR_EVENT_HANDLE, err)
 				continue
 			}
 			chainScanner.waitForRetryHandlers = waitForRetryHandlers
@@ -277,11 +278,11 @@ func (chainScanner *ChainScanner) Start() {
 				case nil:
 					err = scanPrograssModel.UpdateHeight(ctx, &repository.ScanPrograss{Id: record.Id, ChainId: conf.Chain.ChainId, Height: end + 1})
 					if err != nil {
-						logx.Errorf("chain scanner error: %s", err)
+						logx.Errorf("%s: %s", scanner_common.ERROR_EVENT_HANDLE, err)
 						continue
 					}
 				default:
-					logx.Errorf("chain scanner error: %s", err)
+					logx.Errorf("%s: %s", scanner_common.ERROR_EVENT_HANDLE, err)
 					continue
 				}
 			}
@@ -291,7 +292,7 @@ func (chainScanner *ChainScanner) Start() {
 	// Replay scan
 	go func(ctx context.Context) {
 		defer func() {
-			logx.Errorf("chain replay scanner stopped")
+			logx.Errorf("%s", scanner_common.ERROR_REPLAY_HANDLE_STOPPED)
 		}()
 
 		for {
@@ -320,17 +321,17 @@ func (chainScanner *ChainScanner) Start() {
 
 			client, err := chainScanner.ethClientBalancer.GetClient(ctx)
 			if err != nil {
-				logx.Errorf("chain replay scanner error: %s", err)
+				logx.Errorf("%s: %s", scanner_common.ERROR_REPLAY_HANDLE, err)
 				continue
 			}
 			waitForRetryHandlers, err := chainScanner.scanBlock(ctx, client, start, end, chainScanner.handlers, true)
 			if err != nil {
-				logx.Errorf("chain replay scanner error: %s", err)
+				logx.Errorf("%s: %s", scanner_common.ERROR_REPLAY_HANDLE, err)
 				continue
 			}
 
 			if len(waitForRetryHandlers) > 0 {
-				logx.Errorf("chain replay scanner error: %s", "some handler executed failed")
+				logx.Errorf("%s: %s", scanner_common.ERROR_REPLAY_HANDLE, "some handler executed failed")
 				chainScanner.replay = nil
 			} else {
 				chainScanner.replay.Start = end + 1
