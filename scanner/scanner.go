@@ -6,6 +6,7 @@ import (
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/config"
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/internal/server/chain_scanner_service"
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/internal/svc"
+	"github.com/sonex-dex/sonex-chain-scanner/scanner/module/event_handler/sonex"
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/module/global"
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/pb"
 
@@ -33,6 +34,15 @@ func Run(conf config.Config) {
 	err = global.InitEthClientBalancer()
 	if err != nil {
 		panic(err)
+	}
+
+	// Register chain handler
+	sonexConf := conf.Sonex
+	if sonexConf != nil {
+		err = global.AddChainHandler(sonex.NewUniswapV3Handler(conf, *sonexConf))
+		if err != nil {
+			panic(err)
+		}
 	}
 
 	// Rpc configure

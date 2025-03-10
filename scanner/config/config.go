@@ -9,4 +9,5 @@ type Config struct {
 	zrpc.RpcServerConf
 	PostgreSQL PostgreSQLConfig   `json:","`
 	Chain      config.ChainConfig `json:","`
+	Sonex      *SonexConfig       `json:",optional"`
 }
