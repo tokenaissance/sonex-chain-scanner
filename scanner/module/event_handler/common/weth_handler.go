@@ -22,7 +22,7 @@ func NewWETHHandler(conf config.Config) *WETHHandler {
 }
 
 func (handler *WETHHandler) Execute(ctx context.Context, client *eth_client.EthClient, from int64, to int64, transactions []*eth_client.Transaction) ([]func(ctx context.Context, client *eth_client.EthClient), error, bool) {
-	wethAddress := common.HexToAddress(handler.conf.Chain.ETH.WETH)
+	wethAddress := common.HexToAddress(handler.conf.Chain.NativeCoin.WrapCoin)
 
 	weth, err := contract_common.NewWETH(common.Address{}, client)
 	if err != nil {
