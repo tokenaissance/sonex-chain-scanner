@@ -26,6 +26,7 @@ type ChainScanner struct {
 	maxBlockNumber           int64
 	handlers                 []IHandler
 	waitForRetryHandlers     []IHandler
+	callbacks                []func(ctx context.Context, client *eth_client.EthClient)
 	cancel                   context.CancelFunc
 	replay                   *Replay
 }
@@ -67,14 +68,14 @@ func NewChainScanner(svcCtx svc.ServiceContext) (*ChainScanner, error) {
 	return chainScanner, nil
 }
 
-func (chainScanner *ChainScanner) scanBlock(ctx context.Context, client *eth_client.EthClient, start int64, end int64, handlers []IHandler, isReplay bool) ([]IHandler, error) {
+func (chainScanner *ChainScanner) scanBlock(ctx context.Context, client *eth_client.EthClient, start int64, end int64, handlers []IHandler, isReplay bool) ([]func(ctx context.Context, client *eth_client.EthClient), []IHandler, error) {
 	prefix := "chain scanner"
 	if isReplay {
 		prefix = "chain replay scanner"
 	}
 
 	if start > end || len(handlers) == 0 {
-		return []IHandler{}, nil
+		return nil, []IHandler{}, nil
 	}
 
 	startTime := time.Now()
@@ -86,13 +87,13 @@ func (chainScanner *ChainScanner) scanBlock(ctx context.Context, client *eth_cli
 	}
 	transactionMap, err := client.BatchGetTransactions(ctx, numbers, 50)
 	if err != nil {
-		return []IHandler{}, nil
+		return nil, []IHandler{}, err
 	}
 	transactions := []*eth_client.Transaction{}
 	for blockNumber := start; blockNumber < end; blockNumber++ {
 		txs, ok := transactionMap[blockNumber]
 		if !ok {
-			return []IHandler{}, fmt.Errorf("miss block[%d] transactions data", blockNumber)
+			return nil, []IHandler{}, fmt.Errorf("%s: miss block[%d] transactions data", scanner_common.ERROR_EVENT_HANDLE, blockNumber)
 		}
 		transactions = append(transactions, txs...)
 	}
@@ -100,10 +101,11 @@ func (chainScanner *ChainScanner) scanBlock(ctx context.Context, client *eth_cli
 	// Execute handlers
 	var wg sync.WaitGroup
 	results := make(chan struct {
-		Err     error
-		Skip    bool
-		Handler IHandler
-		Cost    time.Duration
+		Callbacks []func(ctx context.Context, client *eth_client.EthClient)
+		Err       error
+		Skip      bool
+		Handler   IHandler
+		Cost      time.Duration
 	}, len(handlers))
 
 	for _, handler := range handlers {
@@ -113,20 +115,22 @@ func (chainScanner *ChainScanner) scanBlock(ctx context.Context, client *eth_cli
 			client *eth_client.EthClient,
 			transactions []*eth_client.Transaction,
 			ch chan struct {
-				Err     error
-				Skip    bool
-				Handler IHandler
-				Cost    time.Duration
+				Callbacks []func(ctx context.Context, client *eth_client.EthClient)
+				Err       error
+				Skip      bool
+				Handler   IHandler
+				Cost      time.Duration
 			},
 		) {
 			defer wg.Done()
 			defer func() {
 				if err := recover(); err != nil {
 					ch <- struct {
-						Err     error
-						Skip    bool
-						Handler IHandler
-						Cost    time.Duration
+						Callbacks []func(ctx context.Context, client *eth_client.EthClient)
+						Err       error
+						Skip      bool
+						Handler   IHandler
+						Cost      time.Duration
 					}{
 						Err:     fmt.Errorf("%s(panic)", err),
 						Skip:    false,
@@ -136,17 +140,22 @@ func (chainScanner *ChainScanner) scanBlock(ctx context.Context, client *eth_cli
 			}()
 
 			startTime := time.Now()
-			err, skip := handler.Execute(ctx, client, start, end, transactions)
+			callbacks, err, skip := handler.Execute(ctx, client, start, end, transactions)
+			if err != nil {
+				callbacks = []func(ctx context.Context, client *eth_client.EthClient){}
+			}
 			ch <- struct {
-				Err     error
-				Skip    bool
-				Handler IHandler
-				Cost    time.Duration
+				Callbacks []func(ctx context.Context, client *eth_client.EthClient)
+				Err       error
+				Skip      bool
+				Handler   IHandler
+				Cost      time.Duration
 			}{
-				Err:     err,
-				Skip:    skip,
-				Handler: handler,
-				Cost:    time.Since(startTime),
+				Callbacks: callbacks,
+				Err:       err,
+				Skip:      skip,
+				Handler:   handler,
+				Cost:      time.Since(startTime),
 			}
 		}(handler, client, transactions, results)
 	}
@@ -158,17 +167,19 @@ func (chainScanner *ChainScanner) scanBlock(ctx context.Context, client *eth_cli
 
 	// Handle results
 	waitForRetryHandlers := []IHandler{}
+	callbacks := []func(ctx context.Context, client *eth_client.EthClient){}
 	for result := range results {
 		if result.Err != nil && !result.Skip {
 			waitForRetryHandlers = append(chainScanner.waitForRetryHandlers, result.Handler)
 			logx.Errorf("handler[%s], %s", reflect.TypeOf(result.Handler).String(), result.Err)
 		}
+		callbacks = append(callbacks, result.Callbacks...)
 		logx.Infof("%s handler[%s] executed: cost %s", prefix, reflect.TypeOf(result.Handler).String(), result.Cost)
 	}
 
 	logx.Infof("%s: from %d to %d, tx count %d, retry count %d, cost %s", prefix, start, end, len(transactions), len(waitForRetryHandlers), time.Since(startTime))
 
-	return waitForRetryHandlers, nil
+	return callbacks, waitForRetryHandlers, nil
 }
 
 func (chainScanner *ChainScanner) AddHandler(handler IHandler) {
@@ -261,14 +272,22 @@ func (chainScanner *ChainScanner) Start() {
 				chainScanner.waitForRetryHandlers = []IHandler{}
 			}
 
-			waitForRetryHandlers, err := chainScanner.scanBlock(ctx, client, start, end, handlers, false)
+			callbacks, waitForRetryHandlers, err := chainScanner.scanBlock(ctx, client, start, end, handlers, false)
 			if err != nil {
 				logx.Errorf("%s: %s", scanner_common.ERROR_EVENT_HANDLE, err)
 				continue
 			}
+			chainScanner.callbacks = append(chainScanner.callbacks, callbacks...)
 			chainScanner.waitForRetryHandlers = waitForRetryHandlers
 
 			if len(chainScanner.waitForRetryHandlers) == 0 {
+				// Execute callback
+				for _, callback := range chainScanner.callbacks {
+					go callback(ctx, client)
+				}
+				chainScanner.callbacks = []func(ctx context.Context, client *eth_client.EthClient){}
+
+				// Update scan prograss
 				conn := repository.NewConn(conf.PostgreSQL.GetConnectString())
 				scanPrograssModel := repository.NewScanPrograssModel(conn)
 				record, err := scanPrograssModel.FindOneByChainId(ctx, conf.Chain.ChainId)
@@ -324,16 +343,21 @@ func (chainScanner *ChainScanner) Start() {
 				logx.Errorf("%s: %s", scanner_common.ERROR_REPLAY_HANDLE, err)
 				continue
 			}
-			waitForRetryHandlers, err := chainScanner.scanBlock(ctx, client, start, end, chainScanner.handlers, true)
+			callbacks, waitForRetryHandlers, err := chainScanner.scanBlock(ctx, client, start, end, chainScanner.handlers, true)
 			if err != nil {
 				logx.Errorf("%s: %s", scanner_common.ERROR_REPLAY_HANDLE, err)
 				continue
+			}
+			// Execute callback
+			for _, callback := range callbacks {
+				go callback(ctx, client)
 			}
 
 			if len(waitForRetryHandlers) > 0 {
 				logx.Errorf("%s: %s", scanner_common.ERROR_REPLAY_HANDLE, "some handler executed failed")
 				chainScanner.replay = nil
 			} else {
+				// Update scan prograss
 				chainScanner.replay.Start = end + 1
 			}
 		}

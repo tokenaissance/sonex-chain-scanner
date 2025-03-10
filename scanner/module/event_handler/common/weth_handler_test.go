@@ -34,9 +34,10 @@ func TestWETHHandler(t *testing.T) {
 	}
 
 	handler := NewWETHHandler(c)
-	err, _ = handler.Execute(context.Background(), client, blockNumber, blockNumber, transactionMap[blockNumber])
+	callbacks, err, _ := handler.Execute(context.Background(), client, blockNumber, blockNumber, transactionMap[blockNumber])
 	if err != nil {
 		t.Error(err)
 		return
 	}
+	_ = callbacks
 }

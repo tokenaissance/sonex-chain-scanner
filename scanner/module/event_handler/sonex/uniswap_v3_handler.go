@@ -9,6 +9,7 @@ import (
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/config"
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/module/global"
 	"github.com/sonex-dex/sonex-chain-scanner/scanner/repository"
+	"github.com/zeromicro/go-zero/core/logx"
 )
 
 type UniswapV3Handler struct {
@@ -23,20 +24,20 @@ func NewUniswapV3Handler(conf config.Config, sonexConf config.SonexConfig) *Unis
 	}
 }
 
-func (handler *UniswapV3Handler) Execute(ctx context.Context, client *eth_client.EthClient, from int64, to int64, transactions []*eth_client.Transaction) (error, bool) {
+func (handler *UniswapV3Handler) Execute(ctx context.Context, client *eth_client.EthClient, from int64, to int64, transactions []*eth_client.Transaction) ([]func(ctx context.Context, client *eth_client.EthClient), error, bool) {
 	positionManagerAddress := common.HexToAddress(handler.sonexConf.PositionManager)
 
 	factory, err := sonex.NewUniswapV3Factory(common.Address{}, client)
 	if err != nil {
-		return err, false
+		return nil, err, false
 	}
 	pool, err := sonex.NewUniswapV3Pool(common.Address{}, client)
 	if err != nil {
-		return err, false
+		return nil, err, false
 	}
 	manager, err := sonex.NewNonfungiblePositionManager(common.Address{}, client)
 	if err != nil {
-		return err, false
+		return nil, err, false
 	}
 
 	conn := repository.NewConn(handler.conf.PostgreSQL.GetConnectString())
@@ -49,6 +50,12 @@ func (handler *UniswapV3Handler) Execute(ctx context.Context, client *eth_client
 	sonexEventPositionManagerIncreaseLiquidityModel := repository.NewSonexEventPositionManagerIncreaseLiquidityModel(conn)
 	sonexEventPositionManagerDecreaseLiquidityModel := repository.NewSonexEventPositionManagerDecreaseLiquidityModel(conn)
 	sonexEventPositionManagerCollectModel := repository.NewSonexEventPositionManagerCollectModel(conn)
+
+	callbacks := []func(ctx context.Context, client *eth_client.EthClient){}
+	swapsInTransaction := map[string]*struct {
+		Transaction *eth_client.Transaction
+		Swaps       []*sonex.UniswapV3PoolSwap
+	}{}
 
 	for _, transaction := range transactions {
 		for _, log := range transaction.Receipt.Logs {
@@ -84,12 +91,12 @@ func (handler *UniswapV3Handler) Execute(ctx context.Context, client *eth_client
 					case nil:
 						continue
 					default:
-						return err, false
+						return nil, err, false
 					}
 
 					id, err := global.NewId()
 					if err != nil {
-						return err, false
+						return nil, err, false
 					}
 					_, err = sonexEventFactoryPoolCreatedModel.Insert(ctx, &repository.SonexEventFactoryPoolCreated{
 						Id:               id,
@@ -109,7 +116,7 @@ func (handler *UniswapV3Handler) Execute(ctx context.Context, client *eth_client
 						EventPool:        eventPool,
 					})
 					if err != nil {
-						return err, false
+						return nil, err, false
 					}
 
 					continue
@@ -139,12 +146,12 @@ func (handler *UniswapV3Handler) Execute(ctx context.Context, client *eth_client
 					case nil:
 						continue
 					default:
-						return err, false
+						return nil, err, false
 					}
 
 					id, err := global.NewId()
 					if err != nil {
-						return err, false
+						return nil, err, false
 					}
 					_, err = sonexEventPoolMintModel.Insert(ctx, &repository.SonexEventPoolMint{
 						Id:             id,
@@ -166,7 +173,7 @@ func (handler *UniswapV3Handler) Execute(ctx context.Context, client *eth_client
 						EventAmount1:   eventAmount1,
 					})
 					if err != nil {
-						return err, false
+						return nil, err, false
 					}
 
 					continue
@@ -195,12 +202,12 @@ func (handler *UniswapV3Handler) Execute(ctx context.Context, client *eth_client
 					case nil:
 						continue
 					default:
-						return err, false
+						return nil, err, false
 					}
 
 					id, err := global.NewId()
 					if err != nil {
-						return err, false
+						return nil, err, false
 					}
 					_, err = sonexEventPoolBurnModel.Insert(ctx, &repository.SonexEventPoolBurn{
 						Id:             id,
@@ -221,7 +228,7 @@ func (handler *UniswapV3Handler) Execute(ctx context.Context, client *eth_client
 						EventAmount1:   eventAmount1,
 					})
 					if err != nil {
-						return err, false
+						return nil, err, false
 					}
 
 					continue
@@ -250,12 +257,12 @@ func (handler *UniswapV3Handler) Execute(ctx context.Context, client *eth_client
 					case nil:
 						continue
 					default:
-						return err, false
+						return nil, err, false
 					}
 
 					id, err := global.NewId()
 					if err != nil {
-						return err, false
+						return nil, err, false
 					}
 					_, err = sonexEventPoolCollectModel.Insert(ctx, &repository.SonexEventPoolCollect{
 						Id:             id,
@@ -276,7 +283,7 @@ func (handler *UniswapV3Handler) Execute(ctx context.Context, client *eth_client
 						EventAmount1:   eventAmount1,
 					})
 					if err != nil {
-						return err, false
+						return nil, err, false
 					}
 
 					continue
@@ -301,12 +308,12 @@ func (handler *UniswapV3Handler) Execute(ctx context.Context, client *eth_client
 					case nil:
 						continue
 					default:
-						return err, false
+						return nil, err, false
 					}
 
 					id, err := global.NewId()
 					if err != nil {
-						return err, false
+						return nil, err, false
 					}
 					_, err = sonexEventPoolSwapModel.Insert(ctx, &repository.SonexEventPoolSwap{
 						Id:                id,
@@ -328,8 +335,19 @@ func (handler *UniswapV3Handler) Execute(ctx context.Context, client *eth_client
 						EventTick:         eventTick,
 					})
 					if err != nil {
-						return err, false
+						return nil, err, false
 					}
+
+					// Callback
+					if _, ok := swapsInTransaction[txHash]; !ok {
+						swapsInTransaction[txHash] = &struct {
+							Transaction *eth_client.Transaction
+							Swaps       []*sonex.UniswapV3PoolSwap
+						}{
+							Transaction: transaction,
+						}
+					}
+					swapsInTransaction[txHash].Swaps = append(swapsInTransaction[txHash].Swaps, event)
 
 					continue
 				}
@@ -354,12 +372,12 @@ func (handler *UniswapV3Handler) Execute(ctx context.Context, client *eth_client
 					case nil:
 						continue
 					default:
-						return err, false
+						return nil, err, false
 					}
 
 					id, err := global.NewId()
 					if err != nil {
-						return err, false
+						return nil, err, false
 					}
 					_, err = sonexEventPositionManagerTransferModel.Insert(ctx, &repository.SonexEventPositionManagerTransfer{
 						Id:           id,
@@ -377,7 +395,7 @@ func (handler *UniswapV3Handler) Execute(ctx context.Context, client *eth_client
 						EventTokenId: eventTokenId,
 					})
 					if err != nil {
-						return err, false
+						return nil, err, false
 					}
 
 					continue
@@ -404,12 +422,12 @@ func (handler *UniswapV3Handler) Execute(ctx context.Context, client *eth_client
 					case nil:
 						continue
 					default:
-						return err, false
+						return nil, err, false
 					}
 
 					id, err := global.NewId()
 					if err != nil {
-						return err, false
+						return nil, err, false
 					}
 					_, err = sonexEventPositionManagerIncreaseLiquidityModel.Insert(ctx, &repository.SonexEventPositionManagerIncreaseLiquidity{
 						Id:             id,
@@ -428,7 +446,7 @@ func (handler *UniswapV3Handler) Execute(ctx context.Context, client *eth_client
 						EventAmount1:   eventAmount1,
 					})
 					if err != nil {
-						return err, false
+						return nil, err, false
 					}
 
 					continue
@@ -455,12 +473,12 @@ func (handler *UniswapV3Handler) Execute(ctx context.Context, client *eth_client
 					case nil:
 						continue
 					default:
-						return err, false
+						return nil, err, false
 					}
 
 					id, err := global.NewId()
 					if err != nil {
-						return err, false
+						return nil, err, false
 					}
 					_, err = sonexEventPositionManagerDecreaseLiquidityModel.Insert(ctx, &repository.SonexEventPositionManagerDecreaseLiquidity{
 						Id:             id,
@@ -479,7 +497,7 @@ func (handler *UniswapV3Handler) Execute(ctx context.Context, client *eth_client
 						EventAmount1:   eventAmount1,
 					})
 					if err != nil {
-						return err, false
+						return nil, err, false
 					}
 
 					continue
@@ -506,12 +524,12 @@ func (handler *UniswapV3Handler) Execute(ctx context.Context, client *eth_client
 					case nil:
 						continue
 					default:
-						return err, false
+						return nil, err, false
 					}
 
 					id, err := global.NewId()
 					if err != nil {
-						return err, false
+						return nil, err, false
 					}
 					_, err = sonexEventPositionManagerCollectModel.Insert(ctx, &repository.SonexEventPositionManagerCollect{
 						Id:             id,
@@ -530,7 +548,7 @@ func (handler *UniswapV3Handler) Execute(ctx context.Context, client *eth_client
 						EventAmount1:   eventAmount1,
 					})
 					if err != nil {
-						return err, false
+						return nil, err, false
 					}
 
 					continue
@@ -539,5 +557,12 @@ func (handler *UniswapV3Handler) Execute(ctx context.Context, client *eth_client
 		}
 	}
 
-	return nil, false
+	// Swap callback handle
+	for k, v := range swapsInTransaction {
+		callbacks = append(callbacks, func(ctx context.Context, client *eth_client.EthClient) {
+			logx.Infof("Tx: %s, %d swaps, ", k, len(v.Swaps))
+		})
+	}
+
+	return callbacks, nil, false
 }

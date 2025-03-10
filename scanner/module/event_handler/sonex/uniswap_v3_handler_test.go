@@ -15,7 +15,7 @@ func TestUniswapV3Handler(t *testing.T) {
 	conf.MustLoad("../../../../test/scanner_local.yaml", &c)
 	_ = global.InitIdGenerater(0)
 
-	var blockNumber int64 = 6695287
+	var blockNumber int64 = 6697634
 
 	balancer, err := eth_client.NewEthClientBalancer(c.Chain)
 	if err != nil {
@@ -34,9 +34,10 @@ func TestUniswapV3Handler(t *testing.T) {
 	}
 
 	handler := NewUniswapV3Handler(c, *c.Sonex)
-	err, _ = handler.Execute(context.Background(), client, blockNumber, blockNumber, transactionMap[blockNumber])
+	callbacks, err, _ := handler.Execute(context.Background(), client, blockNumber, blockNumber, transactionMap[blockNumber])
 	if err != nil {
 		t.Error(err)
 		return
 	}
+	_ = callbacks
 }

@@ -21,17 +21,19 @@ func NewWETHHandler(conf config.Config) *WETHHandler {
 	}
 }
 
-func (handler *WETHHandler) Execute(ctx context.Context, client *eth_client.EthClient, from int64, to int64, transactions []*eth_client.Transaction) (error, bool) {
+func (handler *WETHHandler) Execute(ctx context.Context, client *eth_client.EthClient, from int64, to int64, transactions []*eth_client.Transaction) ([]func(ctx context.Context, client *eth_client.EthClient), error, bool) {
 	wethAddress := common.HexToAddress(handler.conf.Chain.ETH.WETH)
 
 	weth, err := contract_common.NewWETH(common.Address{}, client)
 	if err != nil {
-		return err, false
+		return nil, err, false
 	}
 
 	conn := repository.NewConn(handler.conf.PostgreSQL.GetConnectString())
 	commonEventWethDepositModel := repository.NewCommonEventWethDepositModel(conn)
 	commonEventWethWithdrawalModel := repository.NewCommonEventWethWithdrawalModel(conn)
+
+	callbacks := []func(ctx context.Context, client *eth_client.EthClient){}
 
 	for _, transaction := range transactions {
 		for _, log := range transaction.Receipt.Logs {
@@ -69,12 +71,12 @@ func (handler *WETHHandler) Execute(ctx context.Context, client *eth_client.EthC
 					case nil:
 						continue
 					default:
-						return err, false
+						return nil, err, false
 					}
 
 					id, err := global.NewId()
 					if err != nil {
-						return err, false
+						return nil, err, false
 					}
 					_, err = commonEventWethDepositModel.Insert(ctx, &repository.CommonEventWethDeposit{
 						Id:          id,
@@ -91,7 +93,7 @@ func (handler *WETHHandler) Execute(ctx context.Context, client *eth_client.EthC
 						EventWad:    eventWad,
 					})
 					if err != nil {
-						return err, false
+						return nil, err, false
 					}
 
 					continue
@@ -116,12 +118,12 @@ func (handler *WETHHandler) Execute(ctx context.Context, client *eth_client.EthC
 					case nil:
 						continue
 					default:
-						return err, false
+						return nil, err, false
 					}
 
 					id, err := global.NewId()
 					if err != nil {
-						return err, false
+						return nil, err, false
 					}
 					_, err = commonEventWethWithdrawalModel.Insert(ctx, &repository.CommonEventWethWithdrawal{
 						Id:          id,
@@ -138,7 +140,7 @@ func (handler *WETHHandler) Execute(ctx context.Context, client *eth_client.EthC
 						EventWad:    eventWad,
 					})
 					if err != nil {
-						return err, false
+						return nil, err, false
 					}
 
 					continue
@@ -147,5 +149,5 @@ func (handler *WETHHandler) Execute(ctx context.Context, client *eth_client.EthC
 		}
 	}
 
-	return nil, false
+	return callbacks, nil, false
 }
