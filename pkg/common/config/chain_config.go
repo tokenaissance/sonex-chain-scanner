@@ -13,8 +13,8 @@ type ChainConfig struct {
 }
 
 type EthConfig struct {
-	Name     string  `json:","`
-	Symbol   string  `json:","`
-	Decimals int64   `json:","`
-	WETH     *string `json:",optional"`
+	Name     string `json:","`
+	Symbol   string `json:","`
+	Decimals int64  `json:","`
+	WETH     string `json:",optional"`
 }
