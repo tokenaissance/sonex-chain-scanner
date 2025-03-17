@@ -247,7 +247,8 @@ func (chainScanner *ChainScanner) Start() {
 					if end > start {
 						return nil
 					}
-					return fmt.Errorf("%s", scanner_common.ERROR_EVENT_HANDLE)
+					// end <= start, waiting block confirm.
+					return fmt.Errorf("%s", scanner_common.ERROR_EVENT_HANDLE_WAITING_BLOCK)
 				},
 					retry.Attempts(0),
 					retry.DelayType(retry.DelayTypeFunc(func(n uint, err error, config *retry.Config) time.Duration {
